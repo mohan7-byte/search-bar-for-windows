@@ -2230,8 +2230,6 @@ jobs:
                                   CustomAction = () => Process.Start("rundll32.exe", "user32.dll,LockWorkStation") },
                               new SearchItem { Title = "Empty Recycle Bin", Subtitle = "Clean temporary trash immediately", Category = "SYSTEM", Emoji = "🗑️",
                                   CustomAction = () => SHEmptyRecycleBin(IntPtr.Zero, null, 7) },
-                              new SearchItem { Title = "Empty Recycle Bin", Subtitle = "Clean temporary trash immediately", Category = "SYSTEM", Emoji = "🗑️",
-                                  CustomAction = () => SHEmptyRecycleBin(IntPtr.Zero, null, 7) },
                               new SearchItem { Title = "Sleep PC", Subtitle = "Put computer into low-power sleep", Category = "POWER", Emoji = "🌙",
                                   CustomAction = () => Forms.Application.SetSuspendState(Forms.PowerState.Suspend, false, false) },
                               new SearchItem { Title = "Shutdown PC", Subtitle = "Power off Windows cleanly", Category = "POWER", Emoji = "⚡",
