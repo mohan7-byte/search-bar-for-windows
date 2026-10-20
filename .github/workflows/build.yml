@@ -873,7 +873,7 @@ jobs:
                           string answer;
                           try { answer = await AskGeminiAsync(prompt).ConfigureAwait(false); }
                           catch (Exception ex) { answer = "AI request failed: " + ex.Message; }
-                          Dispatcher.BeginInvoke(new Action(() =>
+                          _ = Dispatcher.BeginInvoke(new Action(() =>
                           {
                               _lastAiResponse = answer ?? "No response was returned.";
                               _aiStatusText.Text = "ANSWER  •  " + (string.IsNullOrWhiteSpace(_config.AiModel) ? "Gemini" : _config.AiModel);
@@ -896,9 +896,21 @@ jobs:
 
                       var thinkingConfig = new Dictionary<string, object>();
                       if (model.StartsWith("gemini-2.5", StringComparison.OrdinalIgnoreCase))
-                          thinkingConfig["thinkingBudget"] = 0;
+                      {
+                          // Gemini 2.5 Pro has a non-zero minimum thinking budget; Flash/Lite can use 0.
+                          thinkingConfig["thinkingBudget"] = model.IndexOf("pro", StringComparison.OrdinalIgnoreCase) >= 0 ? 128 : 0;
+                      }
+                      else if (model.IndexOf("3.8", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                               model.IndexOf("3.7", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                               model.StartsWith("gemini-4", StringComparison.OrdinalIgnoreCase))
+                      {
+                          // Newer model families may reject "minimal"; low is the compatible low-latency setting.
+                          thinkingConfig["thinkingLevel"] = "low";
+                      }
                       else
+                      {
                           thinkingConfig["thinkingLevel"] = "minimal";
+                      }
 
                       var generationConfig = new Dictionary<string, object>
                       {
@@ -1660,6 +1672,17 @@ jobs:
                       var aliasForm = new Grid { Margin = new Thickness(0, 4, 0, 8) };
                       aliasForm.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                       aliasForm.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+                      aliasForm.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                      aliasForm.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                      var aliasNameLabel = CreateSettingsLabel("Shortcut name");
+                      aliasNameLabel.Margin = new Thickness(0, 0, 8, 4);
+                      var aliasTargetLabel = CreateSettingsLabel("Website / app / folder target");
+                      Grid.SetColumn(aliasNameLabel, 0);
+                      Grid.SetRow(aliasNameLabel, 0);
+                      Grid.SetColumn(aliasTargetLabel, 1);
+                      Grid.SetRow(aliasTargetLabel, 0);
+                      aliasForm.Children.Add(aliasNameLabel);
+                      aliasForm.Children.Add(aliasTargetLabel);
                       _aliasNameBox = new TextBox
                       {
                           FontSize = 12.5, Padding = new Thickness(9, 7, 9, 7),
@@ -1671,7 +1694,9 @@ jobs:
                           ToolTip = "Website URL or local app/folder path"
                       };
                       Grid.SetColumn(_aliasNameBox, 0);
+                      Grid.SetRow(_aliasNameBox, 1);
                       Grid.SetColumn(_aliasTargetBox, 1);
+                      Grid.SetRow(_aliasTargetBox, 1);
                       aliasForm.Children.Add(_aliasNameBox);
                       aliasForm.Children.Add(_aliasTargetBox);
                       aliasCard.Children.Add(aliasForm);
