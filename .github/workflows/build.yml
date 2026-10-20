@@ -1,0 +1,810 @@
+name: Build Lightweight Search
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare Icon and Source Code
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "src" | Out-Null
+
+          # 1. Handle icon.ico or convert icon.png or create fallback icon
+          Add-Type -AssemblyName System.Drawing
+          function Convert-PngToIco($pngPath, $icoPath) {
+              $bmp = New-Object System.Drawing.Bitmap($pngPath)
+              $resized = New-Object System.Drawing.Bitmap($bmp, 64, 64)
+              $ms = New-Object System.IO.MemoryStream
+              $resized.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+              $pngBytes = $ms.ToArray()
+              $fs = [System.IO.File]::Create($icoPath)
+              $bw = New-Object System.IO.BinaryWriter($fs)
+              $bw.Write([Int16]0); $bw.Write([Int16]1); $bw.Write([Int16]1)
+              $bw.Write([byte]64); $bw.Write([byte]64); $bw.Write([byte]0); $bw.Write([byte]0)
+              $bw.Write([Int16]1); $bw.Write([Int16]32)
+              $bw.Write([Int32]$pngBytes.Length)
+              $bw.Write([Int32]22)
+              $bw.Write($pngBytes)
+              $bw.Close(); $fs.Close(); $ms.Close(); $resized.Dispose(); $bmp.Dispose()
+          }
+
+          if (Test-Path "icon.ico") {
+              Copy-Item "icon.ico" "src/icon.ico" -Force
+          } elseif (Test-Path "icon.png") {
+              Convert-PngToIco "icon.png" "src/icon.ico"
+          } else {
+              $bmp = New-Object System.Drawing.Bitmap(64, 64)
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+              $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 0, 120, 215))
+              $g.FillEllipse($brush, 4, 4, 56, 56)
+              $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 5)
+              $g.DrawEllipse($pen, 16, 16, 22, 22)
+              $g.DrawLine($pen, 34, 34, 46, 46)
+              $g.Dispose()
+              $bmp.Save("temp_icon.png", [System.Drawing.Imaging.ImageFormat]::Png)
+              $bmp.Dispose()
+              Convert-PngToIco "temp_icon.png" "src/icon.ico"
+          }
+
+          # 2. Create Project File (.NET Framework 4.8 - Native to Windows 10, tiny EXE)
+          $csproj = @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>WinExe</OutputType>
+              <TargetFramework>net48</TargetFramework>
+              <UseWPF>true</UseWPF>
+              <UseWindowsForms>true</UseWindowsForms>
+              <ApplicationIcon>icon.ico</ApplicationIcon>
+              <AssemblyName>ModernSearch</AssemblyName>
+              <PlatformTarget>x64</PlatformTarget>
+              <Optimize>true</Optimize>
+              <DebugType>none</DebugType>
+            </PropertyGroup>
+            <ItemGroup>
+              <EmbeddedResource Include="icon.ico"/>
+            </ItemGroup>
+          </Project>
+          '@
+          Set-Content -Path "src/ModernSearch.csproj" -Value $csproj -Encoding UTF8
+
+          # 3. Create Application C# Source Code
+          $csCode = @'
+          using System;
+          using System.Collections.Generic;
+          using System.Diagnostics;
+          using System.IO;
+          using System.Linq;
+          using System.Reflection;
+          using System.Runtime.InteropServices;
+          using System.Windows;
+          using System.Windows.Controls;
+          using System.Windows.Input;
+          using System.Windows.Media;
+          using System.Windows.Media.Animation;
+          using System.Windows.Media.Effects;
+          using Microsoft.Win32;
+          using Forms = System.Windows.Forms;
+
+          namespace ModernSearch
+          {
+              public class SearchItem
+              {
+                  public string Title { get; set; }
+                  public string Subtitle { get; set; }
+                  public string TargetPath { get; set; }
+                  public string Category { get; set; }
+                  public bool IsWeb { get; set; }
+              }
+
+              public class AppConfig
+              {
+                  public bool SearchApps { get; set; } = true;
+                  public bool SearchFiles { get; set; } = false;
+                  public bool SearchSystem { get; set; } = false;
+                  public bool SearchWeb { get; set; } = false;
+
+                  private static string ConfigPath => Path.Combine(
+                      Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                      "ModernSearch", "settings.cfg");
+
+                  public void Save()
+                  {
+                      try
+                      {
+                          Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
+                          File.WriteAllLines(ConfigPath, new[]
+                          {
+                              "SearchApps=" + SearchApps,
+                              "SearchFiles=" + SearchFiles,
+                              "SearchSystem=" + SearchSystem,
+                              "SearchWeb=" + SearchWeb
+                          });
+                      }
+                      catch { }
+                  }
+
+                  public static AppConfig Load()
+                  {
+                      var cfg = new AppConfig();
+                      try
+                      {
+                          if (File.Exists(ConfigPath))
+                          {
+                              foreach (var line in File.ReadAllLines(ConfigPath))
+                              {
+                                  var parts = line.Split('=');
+                                  if (parts.Length != 2) continue;
+                                  bool val = parts[1].Trim().Equals("True", StringComparison.OrdinalIgnoreCase);
+                                  if (parts[0] == "SearchApps") cfg.SearchApps = val;
+                                  if (parts[0] == "SearchFiles") cfg.SearchFiles = val;
+                                  if (parts[0] == "SearchSystem") cfg.SearchSystem = val;
+                                  if (parts[0] == "SearchWeb") cfg.SearchWeb = val;
+                              }
+                          }
+                      }
+                      catch { }
+                      return cfg;
+                  }
+              }
+
+              public class SearchWindow : Window
+              {
+                  // Win32 APIs for Low-Level Win+S Hook & RAM Trimming
+                  [DllImport("user32.dll", SetLastError = true)]
+                  private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+                  [DllImport("user32.dll", SetLastError = true)]
+                  private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+                  [DllImport("user32.dll")]
+                  private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+                  [DllImport("kernel32.dll")]
+                  private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+                  [DllImport("user32.dll")]
+                  private static extern short GetAsyncKeyState(int vKey);
+
+                  [DllImport("psapi.dll")]
+                  private static extern int EmptyWorkingSet(IntPtr hwProc);
+
+                  private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+                  private LowLevelKeyboardProc _hookProc;
+                  private IntPtr _hookId = IntPtr.Zero;
+
+                  private AppConfig _config;
+                  private List<SearchItem> _appCache = new List<SearchItem>();
+                  private List<SearchItem> _fileCache = null;
+                  private List<SearchItem> _sysCache = null;
+
+                  private TextBox _searchBox;
+                  private ListBox _resultsList;
+                  private Border _settingsPanel;
+                  private TranslateTransform _slideTransform;
+                  private Forms.NotifyIcon _trayIcon;
+
+                  public SearchWindow()
+                  {
+                      _config = AppConfig.Load();
+                      BuildUI();
+                      SetupTrayIcon();
+                      RefreshCaches();
+                      InstallKeyboardHook();
+                      TrimMemory();
+                  }
+
+                  private void BuildUI()
+                  {
+                      Title = "ModernSearch";
+                      Width = 640;
+                      SizeToContent = SizeToContent.Height;
+                      WindowStyle = WindowStyle.None;
+                      AllowsTransparency = true;
+                      Background = Brushes.Transparent;
+                      Topmost = true;
+                      ShowInTaskbar = false;
+
+                      // Center horizontally, upper-middle vertically
+                      Left = (SystemParameters.PrimaryScreenWidth - Width) / 2;
+                      Top = SystemParameters.PrimaryScreenHeight * 0.22;
+
+                      var rootGrid = new Grid { Margin = new Thickness(20) };
+                      _slideTransform = new TranslateTransform(0, 0);
+                      rootGrid.RenderTransform = _slideTransform;
+
+                      var mainBorder = new Border
+                      {
+                          CornerRadius = new CornerRadius(16),
+                          Background = new SolidColorBrush(Color.FromRgb(26, 27, 32)),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(65, 255, 255, 255)),
+                          BorderThickness = new Thickness(1.2),
+                          Effect = new DropShadowEffect
+                          {
+                              BlurRadius = 28,
+                              ShadowDepth = 8,
+                              Opacity = 0.65,
+                              Color = Colors.Black
+                          }
+                      };
+
+                      var stack = new StackPanel();
+
+                      // Top Search Bar Row
+                      var searchGrid = new Grid { Margin = new Thickness(16, 12, 16, 12) };
+                      searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                      searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                      searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                      var searchIcon = new TextBlock
+                      {
+                          Text = "🔍",
+                          FontSize = 18,
+                          Foreground = new SolidColorBrush(Color.FromRgb(120, 175, 255)),
+                          VerticalAlignment = VerticalAlignment.Center,
+                          Margin = new Thickness(2, 0, 12, 0)
+                      };
+                      Grid.SetColumn(searchIcon, 0);
+
+                      _searchBox = new TextBox
+                      {
+                          FontSize = 20,
+                          Foreground = Brushes.White,
+                          Background = Brushes.Transparent,
+                          BorderThickness = new Thickness(0),
+                          CaretBrush = new SolidColorBrush(Color.FromRgb(120, 175, 255)),
+                          VerticalContentAlignment = VerticalAlignment.Center
+                      };
+                      _searchBox.TextChanged += OnSearchTextChanged;
+                      _searchBox.PreviewKeyDown += OnSearchKeyDown;
+                      Grid.SetColumn(_searchBox, 1);
+
+                      var gearBtn = new Button
+                      {
+                          Content = "⚙",
+                          FontSize = 18,
+                          Foreground = new SolidColorBrush(Color.FromRgb(170, 175, 190)),
+                          Background = Brushes.Transparent,
+                          BorderThickness = new Thickness(0),
+                          Cursor = Cursors.Hand,
+                          ToolTip = "Configure Search Scopes (RAM Saver)",
+                          Padding = new Thickness(8, 2, 8, 2)
+                      };
+                      gearBtn.Click += (s, e) =>
+                      {
+                          _settingsPanel.Visibility = _settingsPanel.Visibility == Visibility.Visible
+                              ? Visibility.Collapsed
+                              : Visibility.Visible;
+                      };
+                      Grid.SetColumn(gearBtn, 2);
+
+                      searchGrid.Children.Add(searchIcon);
+                      searchGrid.Children.Add(_searchBox);
+                      searchGrid.Children.Add(gearBtn);
+                      stack.Children.Add(searchGrid);
+
+                      // Settings Panel (Collapsible)
+                      _settingsPanel = BuildSettingsPanel();
+                      stack.Children.Add(_settingsPanel);
+
+                      // Results ListBox
+                      _resultsList = new ListBox
+                      {
+                          Background = Brushes.Transparent,
+                          BorderThickness = new Thickness(0),
+                          MaxHeight = 340,
+                          Margin = new Thickness(10, 0, 10, 10),
+                          Visibility = Visibility.Collapsed,
+                          ScrollViewer.HorizontalScrollBarVisibilityProperty = ScrollBarVisibility.Disabled
+                      };
+                      _resultsList.MouseDoubleClick += (s, e) => ExecuteSelected();
+                      stack.Children.Add(_resultsList);
+
+                      mainBorder.Child = stack;
+                      rootGrid.Children.Add(mainBorder);
+                      Content = rootGrid;
+
+                      Deactivated += (s, e) => HideSearch();
+                  }
+
+                  private Border BuildSettingsPanel()
+                  {
+                      var panelBorder = new Border
+                      {
+                          Background = new SolidColorBrush(Color.FromRgb(20, 21, 26)),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                          BorderThickness = new Thickness(0, 1, 0, 1),
+                          Padding = new Thickness(18, 12, 18, 12),
+                          Visibility = Visibility.Collapsed
+                      };
+
+                      var sp = new StackPanel();
+                      sp.Children.Add(new TextBlock
+                      {
+                          Text = "SEARCH SCOPES (Disable unused options for minimal RAM usage)",
+                          FontSize = 11,
+                          FontWeight = FontWeights.SemiBold,
+                          Foreground = new SolidColorBrush(Color.FromRgb(120, 175, 255)),
+                          Margin = new Thickness(0, 0, 0, 8)
+                      });
+
+                      sp.Children.Add(CreateToggle("Search Installed Apps (Start Menu)", _config.SearchApps, val =>
+                      {
+                          _config.SearchApps = val;
+                          _config.Save();
+                          RefreshCaches();
+                      }));
+
+                      sp.Children.Add(CreateToggle("Search Desktop & Documents Files", _config.SearchFiles, val =>
+                      {
+                          _config.SearchFiles = val;
+                          _config.Save();
+                          RefreshCaches();
+                      }));
+
+                      sp.Children.Add(CreateToggle("Search System Commands (Control Panel, Shutdown, Lock)", _config.SearchSystem, val =>
+                      {
+                          _config.SearchSystem = val;
+                          _config.Save();
+                          RefreshCaches();
+                      }));
+
+                      sp.Children.Add(CreateToggle("Enable Web Search Fallback", _config.SearchWeb, val =>
+                      {
+                          _config.SearchWeb = val;
+                          _config.Save();
+                          UpdateResults(_searchBox.Text);
+                      }));
+
+                      sp.Children.Add(CreateToggle("Run Automatically on Windows Startup", IsStartupEnabled(), val =>
+                      {
+                          SetStartup(val);
+                      }));
+
+                      panelBorder.Child = sp;
+                      return panelBorder;
+                  }
+
+                  private CheckBox CreateToggle(string label, bool initial, Action<bool> onChanged)
+                  {
+                      var cb = new CheckBox
+                      {
+                          Content = new TextBlock
+                          {
+                              Text = label,
+                              Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 230)),
+                              FontSize = 13
+                          },
+                          IsChecked = initial,
+                          Margin = new Thickness(0, 4, 0, 4),
+                          Cursor = Cursors.Hand
+                      };
+                      cb.Checked += (s, e) => onChanged(true);
+                      cb.Unchecked += (s, e) => onChanged(false);
+                      return cb;
+                  }
+
+                  private void RefreshCaches()
+                  {
+                      // 1. Apps Cache
+                      _appCache.Clear();
+                      if (_config.SearchApps)
+                      {
+                          var dirs = new[]
+                          {
+                              Environment.GetFolderPath(Environment.SpecialFolder.CommonStartMenu),
+                              Environment.GetFolderPath(Environment.SpecialFolder.StartMenu)
+                          };
+                          var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                          foreach (var dir in dirs)
+                          {
+                              if (!Directory.Exists(dir)) continue;
+                              try
+                              {
+                                  foreach (var file in Directory.EnumerateFiles(dir, "*.*", SearchOption.AllDirectories))
+                                  {
+                                      if (!file.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) &&
+                                          !file.EndsWith(".url", StringComparison.OrdinalIgnoreCase)) continue;
+                                      var name = Path.GetFileNameWithoutExtension(file);
+                                      if (name.IndexOf("uninstall", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                                      if (seen.Add(name))
+                                      {
+                                          _appCache.Add(new SearchItem
+                                          {
+                                              Title = name,
+                                              Subtitle = "Application",
+                                              TargetPath = file,
+                                              Category = "APP"
+                                          });
+                                      }
+                                  }
+                              }
+                              catch { }
+                          }
+                      }
+
+                      // 2. Files Cache (Freed completely when turned off)
+                      if (_config.SearchFiles)
+                      {
+                          _fileCache = new List<SearchItem>();
+                          var roots = new[]
+                          {
+                              Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                              Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+                          };
+                          foreach (var r in roots)
+                          {
+                              if (!Directory.Exists(r)) continue;
+                              try
+                              {
+                                  foreach (var f in Directory.EnumerateFiles(r, "*.*", SearchOption.TopDirectoryOnly))
+                                  {
+                                      _fileCache.Add(new SearchItem
+                                      {
+                                          Title = Path.GetFileName(f),
+                                          Subtitle = r,
+                                          TargetPath = f,
+                                          Category = "FILE"
+                                      });
+                                  }
+                              }
+                              catch { }
+                          }
+                      }
+                      else
+                      {
+                          _fileCache = null;
+                      }
+
+                      // 3. System Commands Cache
+                      if (_config.SearchSystem)
+                      {
+                          _sysCache = new List<SearchItem>
+                          {
+                              new SearchItem { Title = "Task Manager", Subtitle = "System Tool", TargetPath = "taskmgr.exe", Category = "SYS" },
+                              new SearchItem { Title = "Control Panel", Subtitle = "System Tool", TargetPath = "control.exe", Category = "SYS" },
+                              new SearchItem { Title = "Windows Settings", Subtitle = "System Tool", TargetPath = "ms-settings:", Category = "SYS" },
+                              new SearchItem { Title = "Command Prompt", Subtitle = "System Tool", TargetPath = "cmd.exe", Category = "SYS" },
+                              new SearchItem { Title = "Lock PC", Subtitle = "Power Action", TargetPath = "rundll32.exe user32.dll,LockWorkStation", Category = "SYS" }
+                          };
+                      }
+                      else
+                      {
+                          _sysCache = null;
+                      }
+
+                      TrimMemory();
+                  }
+
+                  private void OnSearchTextChanged(object sender, TextChangedEventArgs e)
+                  {
+                      UpdateResults(_searchBox.Text);
+                  }
+
+                  private void UpdateResults(string rawQuery)
+                  {
+                      _resultsList.Items.Clear();
+                      string q = (rawQuery ?? "").Trim();
+                      if (string.IsNullOrEmpty(q))
+                      {
+                          _resultsList.Visibility = Visibility.Collapsed;
+                          return;
+                      }
+
+                      var matches = new List<SearchItem>();
+
+                      if (_config.SearchApps && _appCache != null)
+                          matches.AddRange(_appCache.Where(x => x.Title.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0));
+
+                      if (_config.SearchSystem && _sysCache != null)
+                          matches.AddRange(_sysCache.Where(x => x.Title.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0));
+
+                      if (_config.SearchFiles && _fileCache != null)
+                          matches.AddRange(_fileCache.Where(x => x.Title.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0));
+
+                      var sorted = matches
+                          .OrderByDescending(x => x.Title.StartsWith(q, StringComparison.OrdinalIgnoreCase))
+                          .ThenBy(x => x.Title.Length)
+                          .Take(8)
+                          .ToList();
+
+                      if (_config.SearchWeb)
+                      {
+                          sorted.Add(new SearchItem
+                          {
+                              Title = "Search Web for \"" + q + "\"",
+                              Subtitle = "Open in default browser",
+                              TargetPath = "https://www.google.com/search?q=" + Uri.EscapeDataString(q),
+                              Category = "WEB",
+                              IsWeb = true
+                          });
+                      }
+
+                      foreach (var item in sorted)
+                      {
+                          _resultsList.Items.Add(CreateResultRow(item));
+                      }
+
+                      if (_resultsList.Items.Count > 0)
+                      {
+                          _resultsList.SelectedIndex = 0;
+                          _resultsList.Visibility = Visibility.Visible;
+                      }
+                      else
+                      {
+                          _resultsList.Visibility = Visibility.Collapsed;
+                      }
+                  }
+
+                  private ListBoxItem CreateResultRow(SearchItem item)
+                  {
+                      var grid = new Grid { Margin = new Thickness(6, 4, 6, 4) };
+                      grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                      grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                      var leftStack = new StackPanel();
+                      leftStack.Children.Add(new TextBlock
+                      {
+                          Text = item.Title,
+                          Foreground = Brushes.White,
+                          FontSize = 15,
+                          FontWeight = FontWeights.Medium
+                      });
+                      leftStack.Children.Add(new TextBlock
+                      {
+                          Text = item.Subtitle,
+                          Foreground = new SolidColorBrush(Color.FromRgb(145, 150, 165)),
+                          FontSize = 11
+                      });
+                      Grid.SetColumn(leftStack, 0);
+
+                      var badge = new Border
+                      {
+                          CornerRadius = new CornerRadius(6),
+                          Background = new SolidColorBrush(Color.FromRgb(42, 46, 58)),
+                          Padding = new Thickness(8, 3, 8, 3),
+                          VerticalAlignment = VerticalAlignment.Center,
+                          Child = new TextBlock
+                          {
+                              Text = item.Category,
+                              Foreground = new SolidColorBrush(Color.FromRgb(130, 180, 255)),
+                              FontSize = 10,
+                              FontWeight = FontWeights.Bold
+                          }
+                      };
+                      Grid.SetColumn(badge, 1);
+
+                      grid.Children.Add(leftStack);
+                      grid.Children.Add(badge);
+
+                      return new ListBoxItem
+                      {
+                          Content = grid,
+                          Tag = item,
+                          Background = Brushes.Transparent,
+                          BorderThickness = new Thickness(0),
+                          Padding = new Thickness(6, 4, 6, 4),
+                          Cursor = Cursors.Hand
+                      };
+                  }
+
+                  private void OnSearchKeyDown(object sender, KeyEventArgs e)
+                  {
+                      if (e.Key == Key.Escape)
+                      {
+                          HideSearch();
+                          e.Handled = true;
+                      }
+                      else if (e.Key == Key.Down && _resultsList.Items.Count > 0)
+                      {
+                          _resultsList.SelectedIndex = (_resultsList.SelectedIndex + 1) % _resultsList.Items.Count;
+                          _resultsList.ScrollIntoView(_resultsList.SelectedItem);
+                          e.Handled = true;
+                      }
+                      else if (e.Key == Key.Up && _resultsList.Items.Count > 0)
+                      {
+                          _resultsList.SelectedIndex = (_resultsList.SelectedIndex - 1 + _resultsList.Items.Count) % _resultsList.Items.Count;
+                          _resultsList.ScrollIntoView(_resultsList.SelectedItem);
+                          e.Handled = true;
+                      }
+                      else if (e.Key == Key.Enter)
+                      {
+                          ExecuteSelected();
+                          e.Handled = true;
+                      }
+                  }
+
+                  private void ExecuteSelected()
+                  {
+                      if (_resultsList.SelectedItem is ListBoxItem lbi && lbi.Tag is SearchItem item)
+                      {
+                          HideSearch();
+                          try
+                          {
+                              if (item.TargetPath == "rundll32.exe user32.dll,LockWorkStation")
+                                  Process.Start("rundll32.exe", "user32.dll,LockWorkStation");
+                              else
+                                  Process.Start(new ProcessStartInfo(item.TargetPath) { UseShellExecute = true });
+                          }
+                          catch { }
+                      }
+                  }
+
+                  public void ToggleSearch()
+                  {
+                      if (IsVisible && Opacity > 0.5)
+                          HideSearch();
+                      else
+                          ShowSearch();
+                  }
+
+                  public void ShowSearch()
+                  {
+                      Left = (SystemParameters.PrimaryScreenWidth - Width) / 2;
+                      Top = SystemParameters.PrimaryScreenHeight * 0.22;
+                      _searchBox.Clear();
+                      _resultsList.Visibility = Visibility.Collapsed;
+                      _settingsPanel.Visibility = Visibility.Collapsed;
+
+                      Show();
+                      Activate();
+                      _searchBox.Focus();
+
+                      var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150));
+                      var slide = new DoubleAnimation(-14, 0, TimeSpan.FromMilliseconds(160))
+                      {
+                          EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                      };
+
+                      BeginAnimation(OpacityProperty, fade);
+                      _slideTransform.BeginAnimation(TranslateTransform.YProperty, slide);
+                  }
+
+                  public void HideSearch()
+                  {
+                      if (!IsVisible) return;
+                      Hide();
+                      _resultsList.Items.Clear();
+                      TrimMemory();
+                  }
+
+                  private void InstallKeyboardHook()
+                  {
+                      _hookProc = HookCallback;
+                      using (Process curProcess = Process.GetCurrentProcess())
+                      using (ProcessModule curModule = curProcess.MainModule)
+                      {
+                          _hookId = SetWindowsHookEx(13, _hookProc, GetModuleHandle(curModule.ModuleName), 0);
+                      }
+                  }
+
+                  private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+                  {
+                      if (nCode >= 0 && (wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104))
+                      {
+                          int vkCode = Marshal.ReadInt32(lParam);
+                          // 0x53 = 'S' key, 0x5B = Left Win, 0x5C = Right Win
+                          if (vkCode == 0x53)
+                          {
+                              bool winDown = (GetAsyncKeyState(0x5B) & 0x8000) != 0 ||
+                                             (GetAsyncKeyState(0x5C) & 0x8000) != 0;
+                              if (winDown)
+                              {
+                                  Dispatcher.BeginInvoke(new Action(ToggleSearch));
+                                  return (IntPtr)1; // Block default Windows 10 Search from opening
+                              }
+                          }
+                      }
+                      return CallNextHookEx(_hookId, nCode, wParam, lParam);
+                  }
+
+                  private void SetupTrayIcon()
+                  {
+                      _trayIcon = new Forms.NotifyIcon
+                      {
+                          Text = "ModernSearch (Win + S)",
+                          Visible = true
+                      };
+
+                      try
+                      {
+                          var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ModernSearch.icon.ico");
+                          if (stream != null)
+                              _trayIcon.Icon = new System.Drawing.Icon(stream);
+                          else
+                              _trayIcon.Icon = System.Drawing.SystemIcons.Application;
+                      }
+                      catch
+                      {
+                          _trayIcon.Icon = System.Drawing.SystemIcons.Application;
+                      }
+
+                      var menu = new Forms.ContextMenuStrip();
+                      menu.Items.Add("Open Search (Win + S)", null, (s, e) => Dispatcher.Invoke(ShowSearch));
+                      menu.Items.Add("Refresh App Index", null, (s, e) => Dispatcher.Invoke(RefreshCaches));
+                      menu.Items.Add(new Forms.ToolStripSeparator());
+                      menu.Items.Add("Exit", null, (s, e) =>
+                      {
+                          _trayIcon.Visible = false;
+                          if (_hookId != IntPtr.Zero) UnhookWindowsHookEx(_hookId);
+                          Application.Current.Shutdown();
+                      });
+
+                      _trayIcon.ContextMenuStrip = menu;
+                      _trayIcon.DoubleClick += (s, e) => Dispatcher.Invoke(ShowSearch);
+                  }
+
+                  private bool IsStartupEnabled()
+                  {
+                      try
+                      {
+                          using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", false))
+                          {
+                              return key?.GetValue("ModernSearch") != null;
+                          }
+                      }
+                      catch { return false; }
+                  }
+
+                  private void SetStartup(bool enable)
+                  {
+                      try
+                      {
+                          using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
+                          {
+                              if (enable)
+                                  key?.SetValue("ModernSearch", "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
+                              else
+                                  key?.DeleteValue("ModernSearch", false);
+                          }
+                      }
+                      catch { }
+                  }
+
+                  private static void TrimMemory()
+                  {
+                      try
+                      {
+                          GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true);
+                          GC.WaitForPendingFinalizers();
+                          EmptyWorkingSet(Process.GetCurrentProcess().Handle);
+                      }
+                      catch { }
+                  }
+
+                  [STAThread]
+                  public static void Main()
+                  {
+                      bool createdNew;
+                      using (var mutex = new System.Threading.Mutex(true, "ModernSearch_SingleInstance_Mutex", out createdNew))
+                      {
+                          if (!createdNew) return;
+                          var app = new Application();
+                          var win = new SearchWindow();
+                          app.Run();
+                      }
+                  }
+              }
+          }
+          '@
+          Set-Content -Path "src/Program.cs" -Value $csCode -Encoding UTF8
+
+      - name: Build Standalone EXE
+        shell: pwsh
+        run: |
+          dotnet build src/ModernSearch.csproj -c Release -o out
+
+      - name: Upload Compiled EXE Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModernSearch-Windows10
+          path: out/ModernSearch.exe
