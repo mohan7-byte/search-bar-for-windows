@@ -1284,7 +1284,7 @@ jobs:
                       if (directInput.StartsWith("sea ", StringComparison.OrdinalIgnoreCase))
                           directInput = directInput.Substring(4).Trim();
 
-                      Uri directUri;
+                      Uri directUri = null;
                       bool hasScheme = directInput.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                                        directInput.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
                       string candidateUrl = hasScheme ? directInput : "https://" + directInput;
