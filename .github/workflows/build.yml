@@ -91,6 +91,7 @@ jobs:
           using System.IO;
           using System.Linq;
           using System.Reflection;
+          using Microsoft.Win32;
           using System.Runtime.InteropServices;
           using System.Net.Http;
           using System.Security.Cryptography;
@@ -149,6 +150,9 @@ jobs:
                   public bool SearchApps { get; set; } = true;
                   public bool SearchFiles { get; set; } = false;
                   public bool SearchSystem { get; set; } = true;
+                  public bool EnableWindowsSettings { get; set; } = true;
+                  public bool EnableControlPanel { get; set; } = true;
+                  public bool EnableSystemTools { get; set; } = true;
                   public bool SearchWeb { get; set; } = false;
                   public bool EnableCalc { get; set; } = true;
                   public bool EnableKill { get; set; } = true;
@@ -183,6 +187,9 @@ jobs:
                               "SearchApps=" + SearchApps,
                               "SearchFiles=" + SearchFiles,
                               "SearchSystem=" + SearchSystem,
+                              "EnableWindowsSettings=" + EnableWindowsSettings,
+                              "EnableControlPanel=" + EnableControlPanel,
+                              "EnableSystemTools=" + EnableSystemTools,
                               "SearchWeb=" + SearchWeb,
                               "EnableCalc=" + EnableCalc,
                               "EnableKill=" + EnableKill,
@@ -225,6 +232,9 @@ jobs:
                                   if (k == "SearchApps") cfg.SearchApps = bVal;
                                   else if (k == "SearchFiles") cfg.SearchFiles = bVal;
                                   else if (k == "SearchSystem") cfg.SearchSystem = bVal;
+                                  else if (k == "EnableWindowsSettings") cfg.EnableWindowsSettings = bVal;
+                                  else if (k == "EnableControlPanel") cfg.EnableControlPanel = bVal;
+                                  else if (k == "EnableSystemTools") cfg.EnableSystemTools = bVal;
                                   else if (k == "SearchWeb") cfg.SearchWeb = bVal;
                                   else if (k == "EnableCalc") cfg.EnableCalc = bVal;
                                   else if (k == "EnableKill") cfg.EnableKill = bVal;
@@ -318,6 +328,9 @@ jobs:
                   private List<SearchItem> _appCache = new List<SearchItem>();
                   private List<SearchItem> _fileCache = null;
                   private List<SearchItem> _sysCache = null;
+                  private List<SearchItem> _windowsSettingsCache = null;
+                  private List<SearchItem> _controlPanelCache = null;
+                  private List<SearchItem> _systemToolsCache = null;
                   private Dictionary<string, int> _usageCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                   private Dictionary<string, ImageSource> _iconCache = new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
                   private List<NoteItem> _notes = new List<NoteItem>();
@@ -1632,6 +1645,21 @@ jobs:
                       {
                           _config.SearchSystem = val; _config.Save(); RefreshCaches();
                       }));
+                      modulesCard.Children.Add(CreateToggle("Windows Settings and quick setting pages", _config.EnableWindowsSettings, val =>
+                      {
+                          _config.EnableWindowsSettings = val; _config.Save(); RefreshCaches();
+                          if (_searchBox != null) UpdateResults(_searchBox.Text);
+                      }));
+                      modulesCard.Children.Add(CreateToggle("Control Panel and classic applets", _config.EnableControlPanel, val =>
+                      {
+                          _config.EnableControlPanel = val; _config.Save(); RefreshCaches();
+                          if (_searchBox != null) UpdateResults(_searchBox.Text);
+                      }));
+                      modulesCard.Children.Add(CreateToggle("System tools and administration", _config.EnableSystemTools, val =>
+                      {
+                          _config.EnableSystemTools = val; _config.Save(); RefreshCaches();
+                          if (_searchBox != null) UpdateResults(_searchBox.Text);
+                      }));
                       modulesCard.Children.Add(CreateToggle("Calculator and math expressions", _config.EnableCalc, val =>
                       {
                           _config.EnableCalc = val; _config.Save();
@@ -2116,6 +2144,50 @@ jobs:
                               }
                               catch { }
                           }
+
+                          // Include registered desktop apps that do not expose a Start Menu shortcut.
+                          foreach (var hive in new[] { Registry.CurrentUser, Registry.LocalMachine })
+                          {
+                              try
+                              {
+                                  using (var appPaths = hive.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"))
+                                  {
+                                      if (appPaths == null) continue;
+                                      foreach (var registeredExe in appPaths.GetSubKeyNames())
+                                      {
+                                          if (!registeredExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
+                                          try
+                                          {
+                                              using (var appKey = appPaths.OpenSubKey(registeredExe))
+                                              {
+                                                  string exe = appKey == null ? null : appKey.GetValue(null) as string;
+                                                  if (string.IsNullOrWhiteSpace(exe)) continue;
+                                                  exe = exe.Trim().Trim('"');
+                                                  int argPos = exe.IndexOf(" %", StringComparison.Ordinal);
+                                                  if (argPos > 0) exe = exe.Substring(0, argPos).Trim().Trim('"');
+                                                  if (!Path.IsPathRooted(exe) || !File.Exists(exe)) continue;
+                                                  string displayName = "";
+                                                  try { displayName = FileVersionInfo.GetVersionInfo(exe).FileDescription; } catch { }
+                                                  if (string.IsNullOrWhiteSpace(displayName)) displayName = Path.GetFileNameWithoutExtension(registeredExe);
+                                                  if (seen.Add(displayName))
+                                                  {
+                                                      _appCache.Add(new SearchItem
+                                                      {
+                                                          Title = displayName,
+                                                          Subtitle = "Installed application",
+                                                          TargetPath = exe,
+                                                          Category = "APP",
+                                                          Emoji = "🧩"
+                                                      });
+                                                  }
+                                              }
+                                          }
+                                          catch { }
+                                      }
+                                  }
+                              }
+                              catch { }
+                          }
                       }
 
                       if (_config.SearchFiles)
@@ -2158,15 +2230,14 @@ jobs:
                                   CustomAction = () => Process.Start("rundll32.exe", "user32.dll,LockWorkStation") },
                               new SearchItem { Title = "Empty Recycle Bin", Subtitle = "Clean temporary trash immediately", Category = "SYSTEM", Emoji = "🗑️",
                                   CustomAction = () => SHEmptyRecycleBin(IntPtr.Zero, null, 7) },
+                              new SearchItem { Title = "Empty Recycle Bin", Subtitle = "Clean temporary trash immediately", Category = "SYSTEM", Emoji = "🗑️",
+                                  CustomAction = () => SHEmptyRecycleBin(IntPtr.Zero, null, 7) },
                               new SearchItem { Title = "Sleep PC", Subtitle = "Put computer into low-power sleep", Category = "POWER", Emoji = "🌙",
                                   CustomAction = () => Forms.Application.SetSuspendState(Forms.PowerState.Suspend, false, false) },
                               new SearchItem { Title = "Shutdown PC", Subtitle = "Power off Windows cleanly", Category = "POWER", Emoji = "⚡",
                                   CustomAction = () => Process.Start("shutdown.exe", "/s /t 0") },
                               new SearchItem { Title = "Restart PC", Subtitle = "Reboot Windows cleanly", Category = "POWER", Emoji = "🔄",
-                                  CustomAction = () => Process.Start("shutdown.exe", "/r /t 0") },
-                              new SearchItem { Title = "Task Manager", Subtitle = "System Resource Monitor", TargetPath = "taskmgr.exe", Category = "SYS", Emoji = "📊" },
-                              new SearchItem { Title = "Control Panel", Subtitle = "Classic Windows Settings", TargetPath = "control.exe", Category = "SYS", Emoji = "🎛️" },
-                              new SearchItem { Title = "Windows Settings", Subtitle = "Modern Settings Panel", TargetPath = "ms-settings:", Category = "SYS", Emoji = "⚙️" }
+                                  CustomAction = () => Process.Start("shutdown.exe", "/r /t 0") }
                           };
                       }
                       else
@@ -2174,7 +2245,142 @@ jobs:
                           _sysCache = null;
                       }
 
+                      _windowsSettingsCache = _config.EnableWindowsSettings ? BuildWindowsSettingsItems() : null;
+                      _controlPanelCache = _config.EnableControlPanel ? BuildControlPanelItems() : null;
+                      _systemToolsCache = _config.EnableSystemTools ? BuildSystemToolsItems() : null;
+
                       TrimMemory();
+                  }
+
+                  private string SystemFile(string fileName)
+                  {
+                      return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), fileName);
+                  }
+
+                  private List<SearchItem> BuildWindowsSettingsItems()
+                  {
+                      return new List<SearchItem>
+                      {
+                          new SearchItem { Title = "Windows Settings", Subtitle = "Open the modern Windows settings home", TargetPath = "ms-settings:", Category = "SETTING", Emoji = "⚙️" },
+                          new SearchItem { Title = "Mouse settings", Subtitle = "Devices • Mouse and pointer options", TargetPath = "ms-settings:mousetouchpad", Category = "SETTING", Emoji = "🖱️" },
+                          new SearchItem { Title = "Touchpad settings", Subtitle = "Touchpad gestures and sensitivity", TargetPath = "ms-settings:devices-touchpad", Category = "SETTING", Emoji = "🖱️" },
+                          new SearchItem { Title = "Display settings", Subtitle = "Resolution, scale and multiple displays", TargetPath = "ms-settings:display", Category = "SETTING", Emoji = "🖥️" },
+                          new SearchItem { Title = "Advanced display settings", Subtitle = "Refresh rate and display information", TargetPath = "ms-settings:display-advanced", Category = "SETTING", Emoji = "🖥️" },
+                          new SearchItem { Title = "Night light settings", Subtitle = "Reduce blue light from your display", TargetPath = "ms-settings:nightlight", Category = "SETTING", Emoji = "🌙" },
+                          new SearchItem { Title = "Sound settings", Subtitle = "Choose audio input and output devices", TargetPath = "ms-settings:sound", Category = "SETTING", Emoji = "🔊" },
+                          new SearchItem { Title = "Volume mixer", Subtitle = "Set volume for apps and devices", TargetPath = "ms-settings:apps-volume", Category = "SETTING", Emoji = "🔉" },
+                          new SearchItem { Title = "Bluetooth settings", Subtitle = "Bluetooth devices and pairing", TargetPath = "ms-settings:bluetooth", Category = "SETTING", Emoji = "ᛒ" },
+                          new SearchItem { Title = "Wi-Fi settings", Subtitle = "Connect to wireless networks", TargetPath = "ms-settings:network-wifi", Category = "SETTING", Emoji = "📶" },
+                          new SearchItem { Title = "Network settings", Subtitle = "Network status and connections", TargetPath = "ms-settings:network-status", Category = "SETTING", Emoji = "🌐" },
+                          new SearchItem { Title = "Ethernet settings", Subtitle = "Wired network connections", TargetPath = "ms-settings:network-ethernet", Category = "SETTING", Emoji = "🌐" },
+                          new SearchItem { Title = "VPN settings", Subtitle = "Manage VPN connections", TargetPath = "ms-settings:network-vpn", Category = "SETTING", Emoji = "🔒" },
+                          new SearchItem { Title = "Airplane mode settings", Subtitle = "Wireless radios and airplane mode", TargetPath = "ms-settings:network-airplanemode", Category = "SETTING", Emoji = "✈️" },
+                          new SearchItem { Title = "Printers and scanners", Subtitle = "Add printers and manage devices", TargetPath = "ms-settings:printers", Category = "SETTING", Emoji = "🖨️" },
+                          new SearchItem { Title = "Personalization settings", Subtitle = "Background, colors and visual options", TargetPath = "ms-settings:personalization", Category = "SETTING", Emoji = "🎨" },
+                          new SearchItem { Title = "Background settings", Subtitle = "Wallpaper and desktop background", TargetPath = "ms-settings:personalization-background", Category = "SETTING", Emoji = "🖼️" },
+                          new SearchItem { Title = "Colors settings", Subtitle = "Accent color and light or dark mode", TargetPath = "ms-settings:personalization-colors", Category = "SETTING", Emoji = "🎨" },
+                          new SearchItem { Title = "Lock screen settings", Subtitle = "Lock screen image and status", TargetPath = "ms-settings:lockscreen", Category = "SETTING", Emoji = "🔒" },
+                          new SearchItem { Title = "Taskbar settings", Subtitle = "Taskbar layout and behavior", TargetPath = "ms-settings:taskbar", Category = "SETTING", Emoji = "📌" },
+                          new SearchItem { Title = "Start menu settings", Subtitle = "Start menu layout and recommendations", TargetPath = "ms-settings:personalization-start", Category = "SETTING", Emoji = "⊞" },
+                          new SearchItem { Title = "Installed apps", Subtitle = "Uninstall apps and manage app options", TargetPath = "ms-settings:appsfeatures", Category = "SETTING", Emoji = "📦" },
+                          new SearchItem { Title = "Default apps", Subtitle = "Choose default apps and file associations", TargetPath = "ms-settings:defaultapps", Category = "SETTING", Emoji = "📂" },
+                          new SearchItem { Title = "Startup apps", Subtitle = "Choose apps that start with Windows", TargetPath = "ms-settings:startupapps", Category = "SETTING", Emoji = "🚀" },
+                          new SearchItem { Title = "Optional features", Subtitle = "Add or remove Windows features", TargetPath = "ms-settings:optionalfeatures", Category = "SETTING", Emoji = "🧩" },
+                          new SearchItem { Title = "Windows Update", Subtitle = "Check and install updates", TargetPath = "ms-settings:windowsupdate", Category = "SETTING", Emoji = "🔄" },
+                          new SearchItem { Title = "Update history", Subtitle = "View installed update history", TargetPath = "ms-settings:windowsupdate-history", Category = "SETTING", Emoji = "📜" },
+                          new SearchItem { Title = "Windows Security", Subtitle = "Security, firewall and protection", TargetPath = "ms-settings:windowsdefender", Category = "SETTING", Emoji = "🛡️" },
+                          new SearchItem { Title = "Activation settings", Subtitle = "Windows activation and product status", TargetPath = "ms-settings:activation", Category = "SETTING", Emoji = "🔑" },
+                          new SearchItem { Title = "About this PC", Subtitle = "Device specifications and Windows version", TargetPath = "ms-settings:about", Category = "SETTING", Emoji = "💻" },
+                          new SearchItem { Title = "Storage settings", Subtitle = "Storage use and cleanup options", TargetPath = "ms-settings:storagesense", Category = "SETTING", Emoji = "💾" },
+                          new SearchItem { Title = "Power and sleep settings", Subtitle = "Power mode, screen and sleep options", TargetPath = "ms-settings:powersleep", Category = "SETTING", Emoji = "🔋" },
+                          new SearchItem { Title = "Battery settings", Subtitle = "Battery saver and battery use", TargetPath = "ms-settings:batterysaver", Category = "SETTING", Emoji = "🔋" },
+                          new SearchItem { Title = "Notifications settings", Subtitle = "Choose app notifications and alerts", TargetPath = "ms-settings:notifications", Category = "SETTING", Emoji = "🔔" },
+                          new SearchItem { Title = "Focus settings", Subtitle = "Focus sessions and quiet hours", TargetPath = "ms-settings:quiethours", Category = "SETTING", Emoji = "🎯" },
+                          new SearchItem { Title = "Date and time settings", Subtitle = "Time zone, clock and date formats", TargetPath = "ms-settings:dateandtime", Category = "SETTING", Emoji = "🕒" },
+                          new SearchItem { Title = "Language and region settings", Subtitle = "Display language and regional formats", TargetPath = "ms-settings:regionlanguage", Category = "SETTING", Emoji = "🌍" },
+                          new SearchItem { Title = "Accessibility settings", Subtitle = "Text size, narration, magnifier and more", TargetPath = "ms-settings:easeofaccess", Category = "SETTING", Emoji = "♿" },
+                          new SearchItem { Title = "Privacy settings", Subtitle = "Review Windows app permissions", TargetPath = "ms-settings:privacy", Category = "SETTING", Emoji = "🔐" },
+                          new SearchItem { Title = "Camera privacy settings", Subtitle = "Control camera access by app", TargetPath = "ms-settings:privacy-webcam", Category = "SETTING", Emoji = "📷" },
+                          new SearchItem { Title = "Microphone privacy settings", Subtitle = "Control microphone access by app", TargetPath = "ms-settings:privacy-microphone", Category = "SETTING", Emoji = "🎙️" },
+                          new SearchItem { Title = "Location privacy settings", Subtitle = "Control location permissions", TargetPath = "ms-settings:privacy-location", Category = "SETTING", Emoji = "📍" },
+                          new SearchItem { Title = "Sign-in options", Subtitle = "PIN, password and Windows Hello", TargetPath = "ms-settings:signinoptions", Category = "SETTING", Emoji = "🔐" },
+                          new SearchItem { Title = "Accounts settings", Subtitle = "Your info, email and other accounts", TargetPath = "ms-settings:yourinfo", Category = "SETTING", Emoji = "👤" },
+                          new SearchItem { Title = "Clipboard settings", Subtitle = "Clipboard history and sync options", TargetPath = "ms-settings:clipboard", Category = "SETTING", Emoji = "📋" },
+                          new SearchItem { Title = "Remote Desktop settings", Subtitle = "Remote Desktop access options", TargetPath = "ms-settings:remotedesktop", Category = "SETTING", Emoji = "🖥️" },
+                          new SearchItem { Title = "Typing settings", Subtitle = "Typing, suggestions and autocorrect", TargetPath = "ms-settings:typing", Category = "SETTING", Emoji = "⌨️" },
+                          new SearchItem { Title = "Developer settings", Subtitle = "Developer features and device settings", TargetPath = "ms-settings:developers", Category = "SETTING", Emoji = "🛠️" },
+                          new SearchItem { Title = "Gaming settings", Subtitle = "Game mode and gaming options", TargetPath = "ms-settings:gaming-gamemode", Category = "SETTING", Emoji = "🎮" },
+                          new SearchItem { Title = "Multitasking settings", Subtitle = "Snap windows and desktop behavior", TargetPath = "ms-settings:multitasking", Category = "SETTING", Emoji = "▦" },
+                          new SearchItem { Title = "Backup settings", Subtitle = "Windows backup and sync", TargetPath = "ms-settings:backup", Category = "SETTING", Emoji = "💽" },
+                          new SearchItem { Title = "Recovery settings", Subtitle = "Reset and recovery options", TargetPath = "ms-settings:recovery", Category = "SETTING", Emoji = "🧰" }
+                      };
+                  }
+
+                  private List<SearchItem> BuildControlPanelItems()
+                  {
+                      return new List<SearchItem>
+                      {
+                          new SearchItem { Title = "Control Panel", Subtitle = "Classic Control Panel home", TargetPath = "control.exe", Category = "CONTROL", Emoji = "🎛️" },
+                          new SearchItem { Title = "Mouse Properties", Subtitle = "Classic mouse pointer and button settings", TargetPath = SystemFile("main.cpl"), Category = "CONTROL", Emoji = "🖱️" },
+                          new SearchItem { Title = "Keyboard Properties", Subtitle = "Classic keyboard repeat and cursor settings", Category = "CONTROL", Emoji = "⌨️",
+                              CustomAction = () => Process.Start(new ProcessStartInfo("control.exe", "keyboard") { UseShellExecute = true }) },
+                          new SearchItem { Title = "Sound Control Panel", Subtitle = "Playback, recording and sound devices", TargetPath = SystemFile("mmsys.cpl"), Category = "CONTROL", Emoji = "🔊" },
+                          new SearchItem { Title = "Programs and Features", Subtitle = "Uninstall or change desktop programs", TargetPath = SystemFile("appwiz.cpl"), Category = "CONTROL", Emoji = "📦" },
+                          new SearchItem { Title = "Network Connections", Subtitle = "View network adapters and connections", TargetPath = SystemFile("ncpa.cpl"), Category = "CONTROL", Emoji = "🌐" },
+                          new SearchItem { Title = "Power Options", Subtitle = "Manage power plans", TargetPath = SystemFile("powercfg.cpl"), Category = "CONTROL", Emoji = "🔋" },
+                          new SearchItem { Title = "Date and Time Control Panel", Subtitle = "Classic date and clock options", TargetPath = SystemFile("timedate.cpl"), Category = "CONTROL", Emoji = "🕒" },
+                          new SearchItem { Title = "Region Control Panel", Subtitle = "Classic number and date format settings", TargetPath = SystemFile("intl.cpl"), Category = "CONTROL", Emoji = "🌍" },
+                          new SearchItem { Title = "Internet Options", Subtitle = "Proxy, connections and browser security", TargetPath = SystemFile("inetcpl.cpl"), Category = "CONTROL", Emoji = "🌐" },
+                          new SearchItem { Title = "System Properties", Subtitle = "Computer name, hardware and advanced options", TargetPath = SystemFile("sysdm.cpl"), Category = "CONTROL", Emoji = "💻" },
+                          new SearchItem { Title = "Windows Defender Firewall Control Panel", Subtitle = "Classic firewall configuration", TargetPath = SystemFile("firewall.cpl"), Category = "CONTROL", Emoji = "🛡️" },
+                          new SearchItem { Title = "Security and Maintenance", Subtitle = "Security status and maintenance alerts", TargetPath = SystemFile("wscui.cpl"), Category = "CONTROL", Emoji = "🛡️" },
+                          new SearchItem { Title = "Devices and Printers", Subtitle = "Classic connected device management", Category = "CONTROL", Emoji = "🖨️",
+                              CustomAction = () => Process.Start(new ProcessStartInfo("control.exe", "/name Microsoft.DevicesAndPrinters") { UseShellExecute = true }) },
+                          new SearchItem { Title = "Network and Sharing Center", Subtitle = "Classic network sharing and adapter settings", Category = "CONTROL", Emoji = "🌐",
+                              CustomAction = () => Process.Start(new ProcessStartInfo("control.exe", "/name Microsoft.NetworkAndSharingCenter") { UseShellExecute = true }) },
+                          new SearchItem { Title = "File Explorer Options", Subtitle = "Hidden files, extensions and folder browsing", Category = "CONTROL", Emoji = "📁",
+                              CustomAction = () => Process.Start(new ProcessStartInfo("control.exe", "folders") { UseShellExecute = true }) },
+                          new SearchItem { Title = "Credential Manager", Subtitle = "View saved Windows and web credentials", Category = "CONTROL", Emoji = "🔑",
+                              CustomAction = () => Process.Start(new ProcessStartInfo("control.exe", "/name Microsoft.CredentialManager") { UseShellExecute = true }) },
+                          new SearchItem { Title = "User Accounts Control Panel", Subtitle = "Manage local user account options", Category = "CONTROL", Emoji = "👤",
+                              CustomAction = () => Process.Start(new ProcessStartInfo("control.exe", "/name Microsoft.UserAccounts") { UseShellExecute = true }) },
+                          new SearchItem { Title = "Administrative Tools", Subtitle = "Classic Windows administration shortcuts", Category = "CONTROL", Emoji = "🛠️",
+                              CustomAction = () => Process.Start(new ProcessStartInfo("control.exe", "/name Microsoft.AdministrativeTools") { UseShellExecute = true }) },
+                          new SearchItem { Title = "Accessibility Center", Subtitle = "Classic accessibility tools", Category = "CONTROL", Emoji = "♿",
+                              CustomAction = () => Process.Start(new ProcessStartInfo("control.exe", "/name Microsoft.EaseOfAccessCenter") { UseShellExecute = true }) },
+                          new SearchItem { Title = "Fonts", Subtitle = "View installed fonts", TargetPath = Environment.GetFolderPath(Environment.SpecialFolder.Fonts), Category = "CONTROL", Emoji = "🔤" }
+                      };
+                  }
+
+                  private List<SearchItem> BuildSystemToolsItems()
+                  {
+                      return new List<SearchItem>
+                      {
+                          new SearchItem { Title = "Task Manager", Subtitle = "Running apps and system performance", TargetPath = "taskmgr.exe", Category = "TOOL", Emoji = "📊" },
+                          new SearchItem { Title = "Device Manager", Subtitle = "Manage hardware and drivers", TargetPath = SystemFile("devmgmt.msc"), Category = "TOOL", Emoji = "🧩" },
+                          new SearchItem { Title = "Computer Management", Subtitle = "Storage, services and system tools", TargetPath = SystemFile("compmgmt.msc"), Category = "TOOL", Emoji = "🖥️" },
+                          new SearchItem { Title = "Services", Subtitle = "Manage Windows services", TargetPath = SystemFile("services.msc"), Category = "TOOL", Emoji = "⚙️" },
+                          new SearchItem { Title = "Event Viewer", Subtitle = "Inspect Windows application and system logs", TargetPath = SystemFile("eventvwr.msc"), Category = "TOOL", Emoji = "📜" },
+                          new SearchItem { Title = "Task Scheduler", Subtitle = "Create and manage scheduled tasks", TargetPath = SystemFile("taskschd.msc"), Category = "TOOL", Emoji = "🗓️" },
+                          new SearchItem { Title = "Disk Management", Subtitle = "Manage disks, volumes and partitions", TargetPath = SystemFile("diskmgmt.msc"), Category = "TOOL", Emoji = "💽" },
+                          new SearchItem { Title = "Resource Monitor", Subtitle = "Detailed CPU, memory, disk and network usage", TargetPath = "resmon.exe", Category = "TOOL", Emoji = "📈" },
+                          new SearchItem { Title = "Performance Monitor", Subtitle = "Detailed performance counters and reports", TargetPath = "perfmon.exe", Category = "TOOL", Emoji = "📉" },
+                          new SearchItem { Title = "System Information", Subtitle = "Hardware, resources and system summary", TargetPath = "msinfo32.exe", Category = "TOOL", Emoji = "ℹ️" },
+                          new SearchItem { Title = "Registry Editor", Subtitle = "Advanced Windows registry editor", TargetPath = "regedit.exe", Category = "TOOL", Emoji = "🧩" },
+                          new SearchItem { Title = "Command Prompt", Subtitle = "Open the Windows command shell", TargetPath = "cmd.exe", Category = "TOOL", Emoji = "⌘" },
+                          new SearchItem { Title = "PowerShell", Subtitle = "Open a Windows PowerShell terminal", TargetPath = "powershell.exe", Category = "TOOL", Emoji = "⌨️" },
+                          new SearchItem { Title = "Windows Terminal", Subtitle = "Open the modern terminal app", TargetPath = "wt.exe", Category = "TOOL", Emoji = "🖥️" },
+                          new SearchItem { Title = "System Configuration", Subtitle = "Configure Windows startup options", TargetPath = "msconfig.exe", Category = "TOOL", Emoji = "⚙️" },
+                          new SearchItem { Title = "Windows Memory Diagnostic", Subtitle = "Schedule a memory test", TargetPath = "mdsched.exe", Category = "TOOL", Emoji = "🧠" },
+                          new SearchItem { Title = "Disk Cleanup", Subtitle = "Free space using the Windows cleanup tool", TargetPath = "cleanmgr.exe", Category = "TOOL", Emoji = "🧹" },
+                          new SearchItem { Title = "Character Map", Subtitle = "Find special characters and symbols", TargetPath = "charmap.exe", Category = "TOOL", Emoji = "🔣" },
+                          new SearchItem { Title = "Remote Desktop Connection", Subtitle = "Connect to another Windows PC", TargetPath = "mstsc.exe", Category = "TOOL", Emoji = "🖥️" },
+                          new SearchItem { Title = "Windows Firewall Advanced Security", Subtitle = "Advanced firewall rules and monitoring", TargetPath = SystemFile("wf.msc"), Category = "TOOL", Emoji = "🛡️" },
+                          new SearchItem { Title = "Local Security Policy", Subtitle = "Advanced local security settings (edition dependent)", TargetPath = SystemFile("secpol.msc"), Category = "TOOL", Emoji = "🔐" },
+                          new SearchItem { Title = "Group Policy Editor", Subtitle = "Local group policy settings (edition dependent)", TargetPath = SystemFile("gpedit.msc"), Category = "TOOL", Emoji = "📋" },
+                          new SearchItem { Title = "ODBC Data Sources", Subtitle = "Configure ODBC database connections", TargetPath = "odbcad32.exe", Category = "TOOL", Emoji = "🗄️" },
+                          new SearchItem { Title = "Component Services", Subtitle = "Manage COM+ and component services", TargetPath = SystemFile("comexp.msc"), Category = "TOOL", Emoji = "⚙️" }
+                      };
                   }
 
                   private void OnSearchTextChanged(object sender, TextChangedEventArgs e)
@@ -2452,6 +2658,15 @@ jobs:
 
                       if (_config.SearchSystem && _sysCache != null)
                           matches.AddRange(_sysCache.Where(x => MatchesQuery(x.Title, q)));
+
+                      if (_config.EnableWindowsSettings && _windowsSettingsCache != null)
+                          matches.AddRange(_windowsSettingsCache.Where(x => MatchesQuery(x.Title, q)));
+
+                      if (_config.EnableControlPanel && _controlPanelCache != null)
+                          matches.AddRange(_controlPanelCache.Where(x => MatchesQuery(x.Title, q)));
+
+                      if (_config.EnableSystemTools && _systemToolsCache != null)
+                          matches.AddRange(_systemToolsCache.Where(x => MatchesQuery(x.Title, q)));
 
                       if (_config.SearchFiles && _fileCache != null)
                           matches.AddRange(_fileCache.Where(x => MatchesQuery(x.Title, q)));
