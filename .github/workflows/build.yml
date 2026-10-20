@@ -73,6 +73,9 @@ jobs:
             <ItemGroup>
               <Reference Include="System.Data" />
               <Reference Include="System.Drawing" />
+              <Reference Include="System.Net.Http" />
+              <Reference Include="System.Security" />
+              <Reference Include="System.Web.Extensions" />
               <EmbeddedResource Include="icon.ico"/>
             </ItemGroup>
           </Project>
@@ -89,6 +92,11 @@ jobs:
           using System.Linq;
           using System.Reflection;
           using System.Runtime.InteropServices;
+          using System.Net.Http;
+          using System.Security.Cryptography;
+          using System.Text;
+          using System.Threading.Tasks;
+          using System.Web.Script.Serialization;
           using System.Windows;
           using System.Windows.Controls;
           using System.Windows.Input;
@@ -121,6 +129,20 @@ jobs:
                   public int ColorIndex { get; set; }
               }
 
+              public class ShortcutAlias
+              {
+                  public string Name { get; set; }
+                  public string Target { get; set; }
+              }
+
+              public class FavoriteEntry
+              {
+                  public string Title { get; set; }
+                  public string TargetPath { get; set; }
+                  public string Category { get; set; }
+                  public string Emoji { get; set; }
+              }
+
               public class AppConfig
               {
                   public bool SearchApps { get; set; } = true;
@@ -131,6 +153,13 @@ jobs:
                   public bool EnableKill { get; set; } = true;
                   public bool EnableNotes { get; set; } = true;
                   public bool EnableAcrylic { get; set; } = true;
+                  public bool EnableShortcuts { get; set; } = true;
+                  public bool EnableFavorites { get; set; } = true;
+                  public bool EnableFolderSearch { get; set; } = true;
+                  public bool IncludeSubfolders { get; set; } = false;
+                  public bool EnableAI { get; set; } = false;
+                  public string SearchFolderPath { get; set; } = "";
+                  public string AiModel { get; set; } = "gemini-3.5-flash-lite";
                   public int ThemeIndex { get; set; } = 0;
                   public double WindowWidth { get; set; } = 660;
                   public double PosXPercent { get; set; } = 50;
@@ -158,6 +187,13 @@ jobs:
                               "EnableKill=" + EnableKill,
                               "EnableNotes=" + EnableNotes,
                               "EnableAcrylic=" + EnableAcrylic,
+                              "EnableShortcuts=" + EnableShortcuts,
+                              "EnableFavorites=" + EnableFavorites,
+                              "EnableFolderSearch=" + EnableFolderSearch,
+                              "IncludeSubfolders=" + IncludeSubfolders,
+                              "EnableAI=" + EnableAI,
+                              "SearchFolderPath=" + Convert.ToBase64String(Encoding.UTF8.GetBytes(SearchFolderPath ?? "")),
+                              "AiModel=" + AiModel,
                               "ThemeIndex=" + ThemeIndex,
                               "WindowWidth=" + WindowWidth,
                               "PosXPercent=" + PosXPercent,
@@ -177,7 +213,7 @@ jobs:
                           {
                               foreach (var line in File.ReadAllLines(ConfigPath))
                               {
-                                  var parts = line.Split('=');
+                                  var parts = line.Split(new[] { '=' }, 2);
                                   if (parts.Length != 2) continue;
                                   string k = parts[0].Trim();
                                   string v = parts[1].Trim();
@@ -193,6 +229,17 @@ jobs:
                                   else if (k == "EnableKill") cfg.EnableKill = bVal;
                                   else if (k == "EnableNotes") cfg.EnableNotes = bVal;
                                   else if (k == "EnableAcrylic") cfg.EnableAcrylic = bVal;
+                                  else if (k == "EnableShortcuts") cfg.EnableShortcuts = bVal;
+                                  else if (k == "EnableFavorites") cfg.EnableFavorites = bVal;
+                                  else if (k == "EnableFolderSearch") cfg.EnableFolderSearch = bVal;
+                                  else if (k == "IncludeSubfolders") cfg.IncludeSubfolders = bVal;
+                                  else if (k == "EnableAI") cfg.EnableAI = bVal;
+                                  else if (k == "SearchFolderPath")
+                                  {
+                                      try { cfg.SearchFolderPath = Encoding.UTF8.GetString(Convert.FromBase64String(v)); }
+                                      catch { cfg.SearchFolderPath = ""; }
+                                  }
+                                  else if (k == "AiModel") cfg.AiModel = v;
                                   else if (k == "ThemeIndex" && int.TryParse(v, out iVal)) cfg.ThemeIndex = iVal;
                                   else if (k == "WindowWidth" && double.TryParse(v, out dVal)) cfg.WindowWidth = dVal;
                                   else if (k == "PosXPercent" && double.TryParse(v, out dVal)) cfg.PosXPercent = dVal;
