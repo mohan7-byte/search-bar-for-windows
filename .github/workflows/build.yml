@@ -320,6 +320,13 @@ jobs:
                   private Dictionary<string, int> _usageCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
                   private Dictionary<string, ImageSource> _iconCache = new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
                   private List<NoteItem> _notes = new List<NoteItem>();
+                  private List<ShortcutAlias> _shortcuts = new List<ShortcutAlias>();
+                  private List<FavoriteEntry> _favorites = new List<FavoriteEntry>();
+                  private List<SearchItem> _folderCache = null;
+                  private string _folderCachePath = "";
+                  private DateTime _folderCacheLoadedAt = DateTime.MinValue;
+                  private string _lastAiResponse = "";
+                  private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
 
                   private Border _mainBorder;
                   private TextBox _searchBox;
@@ -328,6 +335,18 @@ jobs:
                   private ListBox _resultsList;
                   private Border _notesBoard;
                   private StackPanel _notesContainer;
+                  private Border _favoritesBoard;
+                  private StackPanel _favoritesContainer;
+                  private Border _aiBoard;
+                  private StackPanel _aiContent;
+                  private TextBlock _aiStatusText;
+                  private TextBox _aliasNameBox;
+                  private TextBox _aliasTargetBox;
+                  private StackPanel _shortcutList;
+                  private TextBlock _folderPathText;
+                  private TextBox _aiModelBox;
+                  private PasswordBox _aiKeyBox;
+                  private TextBlock _aiKeyStatusText;
                   private Border _settingsPanel;
                   private TranslateTransform _slideTransform;
                   private ScaleTransform _scaleTransform;
@@ -357,6 +376,8 @@ jobs:
                       _config = AppConfig.Load();
                       LoadUsageData();
                       LoadNotes();
+                      LoadShortcuts();
+                      LoadFavorites();
                       BuildUI();
                       ApplyThemeAndGeometry();
                       SetupTrayIcon();
@@ -504,7 +525,7 @@ jobs:
                       var inputContainer = new Grid();
                       _placeholderText = new TextBlock
                       {
-                          Text = "Search apps, math (45*18%), 'note', 'kill', 'vol 50'...",
+                          Text = "Search apps, fav, gem, folder report, ai your question, math...",
                           FontSize = 17,
                           Foreground = new SolidColorBrush(Color.FromRgb(115, 120, 138)),
                           VerticalAlignment = VerticalAlignment.Center,
@@ -545,6 +566,13 @@ jobs:
                           _settingsPanel.Visibility = _settingsPanel.Visibility == Visibility.Visible
                               ? Visibility.Collapsed
                               : Visibility.Visible;
+                          if (_settingsPanel.Visibility == Visibility.Visible)
+                          {
+                              _resultsList.Visibility = Visibility.Collapsed;
+                              _notesBoard.Visibility = Visibility.Collapsed;
+                              if (_favoritesBoard != null) _favoritesBoard.Visibility = Visibility.Collapsed;
+                              if (_aiBoard != null) _aiBoard.Visibility = Visibility.Collapsed;
+                          }
                       };
                       Grid.SetColumn(gearBtn, 2);
 
@@ -560,6 +588,12 @@ jobs:
                       // Visual Sticky Notes Scratchpad
                       _notesBoard = BuildNotesBoard();
                       stack.Children.Add(_notesBoard);
+
+                      // Favorites and on-demand AI response surfaces.
+                      _favoritesBoard = BuildFavoritesBoard();
+                      stack.Children.Add(_favoritesBoard);
+                      _aiBoard = BuildAiBoard();
+                      stack.Children.Add(_aiBoard);
 
                       // Results ListBox
                       _resultsList = new ListBox
@@ -756,25 +790,44 @@ jobs:
                   {
                       var panelBorder = new Border
                       {
-                          Background = new SolidColorBrush(Color.FromArgb(215, 16, 17, 22)),
-                          BorderBrush = new SolidColorBrush(Color.FromArgb(45, 255, 255, 255)),
-                          BorderThickness = new Thickness(0, 1, 0, 1),
-                          Padding = new Thickness(18, 12, 18, 12),
+                          Background = _settingsPanelBrush,
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(55, 130, 140, 160)),
+                          BorderThickness = new Thickness(1),
+                          CornerRadius = new CornerRadius(14),
+                          Padding = new Thickness(16, 14, 16, 14),
+                          MaxHeight = 480,
                           Visibility = Visibility.Collapsed
                       };
 
-                      var scroll = new ScrollViewer
+                      var root = new StackPanel();
+                      root.Children.Add(new TextBlock
                       {
-                          MaxHeight = 330,
-                          VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+                          Text = "CONTROL CENTER",
+                          FontSize = 15,
+                          FontWeight = FontWeights.Bold,
+                          Foreground = _primaryTextBrush,
+                          Margin = new Thickness(2, 0, 0, 3)
+                      });
+                      root.Children.Add(new TextBlock
+                      {
+                          Text = "Personalize your launcher. Turn off anything you don't use to keep it lean.",
+                          FontSize = 11.5,
+                          Foreground = _secondaryTextBrush,
+                          Margin = new Thickness(2, 0, 0, 12),
+                          TextWrapping = TextWrapping.Wrap,
+                          Tag = "muted"
+                      });
+                      var tabs = new TabControl
+                      {
+                          BorderThickness = new Thickness(0),
+                          Background = Brushes.Transparent,
+                          Foreground = _primaryTextBrush,
+                          MaxHeight = 415
                       };
 
-                      var sp = new StackPanel();
-
-                      // Section 1: Theme & Blur
-                      sp.Children.Add(CreateSectionHeader("APPEARANCE, THEME & BLUR"));
-
-                      var themeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+                      var appearancePage = CreateSettingsPage();
+                      var themeCard = CreateSettingsCard(appearancePage, "Appearance", "System mode follows your Windows app theme.");
+                      var themeRow = new WrapPanel { Margin = new Thickness(0, 3, 0, 8) };
                       string[] themeNames = { "System", "Light", "Dark", "Ocean", "OLED", "Cyberpunk" };
                       for (int i = 0; i < themeNames.Length; i++)
                       {
@@ -783,12 +836,14 @@ jobs:
                           {
                               Content = themeNames[i],
                               FontSize = 11,
+                              FontWeight = FontWeights.SemiBold,
                               Foreground = i == 1 ? Brushes.Black : Brushes.White,
                               Background = new SolidColorBrush(Color.FromRgb(_themes[i][3], _themes[i][4], _themes[i][5])),
                               BorderThickness = new Thickness(0),
-                              Padding = new Thickness(10, 5, 10, 5),
-                              Margin = new Thickness(0, 0, 6, 0),
-                              Cursor = Cursors.Hand
+                              Padding = new Thickness(12, 7, 12, 7),
+                              Margin = new Thickness(0, 0, 7, 7),
+                              Cursor = Cursors.Hand,
+                              Tag = "themeButton"
                           };
                           btn.Click += (s, e) =>
                           {
@@ -798,9 +853,8 @@ jobs:
                           };
                           themeRow.Children.Add(btn);
                       }
-                      sp.Children.Add(themeRow);
-
-                      sp.Children.Add(CreateToggle("Enable Windows Frosted Glass / Blur Effect", _config.EnableAcrylic, val =>
+                      themeCard.Children.Add(themeRow);
+                      themeCard.Children.Add(CreateToggle("Enable frosted glass blur", _config.EnableAcrylic, val =>
                       {
                           _config.EnableAcrylic = val;
                           _config.Save();
@@ -808,78 +862,302 @@ jobs:
                           ApplyThemeAndGeometry();
                       }));
 
-                      // Section 2: Position & Size Sliders
-                      sp.Children.Add(CreateSectionHeader("CUSTOM POSITION & SIZE SLIDERS"));
-
-                      sp.Children.Add(CreateSliderRow("Search Bar Width (px)", 480, 920, _config.WindowWidth, val =>
+                      var layoutCard = CreateSettingsCard(appearancePage, "Position & shape", "Adjust screen placement and size.");
+                      layoutCard.Children.Add(CreateSliderRow("Width (px)", 480, 920, _config.WindowWidth, val =>
                       {
-                          _config.WindowWidth = Math.Round(val);
-                          _config.Save();
-                          ApplyThemeAndGeometry();
+                          _config.WindowWidth = Math.Round(val); _config.Save(); ApplyThemeAndGeometry();
                       }));
-
-                      sp.Children.Add(CreateSliderRow("Horizontal Position (%)", 10, 90, _config.PosXPercent, val =>
+                      layoutCard.Children.Add(CreateSliderRow("Horizontal position (%)", 10, 90, _config.PosXPercent, val =>
                       {
-                          _config.PosXPercent = Math.Round(val);
-                          _config.Save();
-                          ApplyThemeAndGeometry();
+                          _config.PosXPercent = Math.Round(val); _config.Save(); ApplyThemeAndGeometry();
                       }));
-
-                      sp.Children.Add(CreateSliderRow("Vertical Position (%)", 5, 80, _config.PosYPercent, val =>
+                      layoutCard.Children.Add(CreateSliderRow("Vertical position (%)", 5, 80, _config.PosYPercent, val =>
                       {
-                          _config.PosYPercent = Math.Round(val);
-                          _config.Save();
-                          ApplyThemeAndGeometry();
+                          _config.PosYPercent = Math.Round(val); _config.Save(); ApplyThemeAndGeometry();
                       }));
-
-                      sp.Children.Add(CreateSliderRow("Corner Roundness", 0, 28, _config.CornerRadiusVal, val =>
+                      layoutCard.Children.Add(CreateSliderRow("Corner roundness", 0, 28, _config.CornerRadiusVal, val =>
                       {
-                          _config.CornerRadiusVal = Math.Round(val);
-                          _config.Save();
-                          ApplyThemeAndGeometry();
+                          _config.CornerRadiusVal = Math.Round(val); _config.Save(); ApplyThemeAndGeometry();
                       }));
+                      var startupCard = CreateSettingsCard(appearancePage, "Startup", "Summon the launcher with Alt + Space.");
+                      startupCard.Children.Add(CreateToggle("Run automatically when Windows starts", IsStartupEnabled(), val => SetStartup(val)));
+                      tabs.Items.Add(new TabItem { Header = "Appearance", Content = WrapSettingsPage(appearancePage) });
 
-                      // Section 3: Search Scopes (RAM Savers)
-                      sp.Children.Add(CreateSectionHeader("SEARCH MODULES (DISABLE UNUSED FOR MINIMAL RAM)"));
-
-                      sp.Children.Add(CreateToggle("Installed Apps + Real App Icons + Smart Learning", _config.SearchApps, val =>
+                      var searchPage = CreateSettingsPage();
+                      var modulesCard = CreateSettingsCard(searchPage, "Search modules", "Disabled modules are skipped and remain idle.");
+                      modulesCard.Children.Add(CreateToggle("Installed apps and smart ranking", _config.SearchApps, val =>
                       {
                           _config.SearchApps = val; _config.Save(); RefreshCaches();
                       }));
-                      sp.Children.Add(CreateToggle("Instant Math Calculator (e.g. 450 * 18%)", _config.EnableCalc, val =>
-                      {
-                          _config.EnableCalc = val; _config.Save();
-                      }));
-                      sp.Children.Add(CreateToggle("Process Killer ('kill chrome') & Volume ('vol 50')", _config.EnableKill, val =>
-                      {
-                          _config.EnableKill = val; _config.Save();
-                      }));
-                      sp.Children.Add(CreateToggle("Visual Sticky Notes ('note ...' or 'notes')", _config.EnableNotes, val =>
-                      {
-                          _config.EnableNotes = val; _config.Save();
-                      }));
-                      sp.Children.Add(CreateToggle("System & Power Commands (Lock, Sleep, Empty Bin)", _config.SearchSystem, val =>
-                      {
-                          _config.SearchSystem = val; _config.Save(); RefreshCaches();
-                      }));
-                      sp.Children.Add(CreateToggle("Desktop & Documents Files", _config.SearchFiles, val =>
+                      modulesCard.Children.Add(CreateToggle("Desktop and Documents files", _config.SearchFiles, val =>
                       {
                           _config.SearchFiles = val; _config.Save(); RefreshCaches();
                       }));
-                      sp.Children.Add(CreateToggle("Web Search Fallback", _config.SearchWeb, val =>
+                      modulesCard.Children.Add(CreateToggle("Windows system and power commands", _config.SearchSystem, val =>
+                      {
+                          _config.SearchSystem = val; _config.Save(); RefreshCaches();
+                      }));
+                      modulesCard.Children.Add(CreateToggle("Calculator and math expressions", _config.EnableCalc, val =>
+                      {
+                          _config.EnableCalc = val; _config.Save();
+                      }));
+                      modulesCard.Children.Add(CreateToggle("Process and volume commands", _config.EnableKill, val =>
+                      {
+                          _config.EnableKill = val; _config.Save();
+                      }));
+                      modulesCard.Children.Add(CreateToggle("Sticky notes ('note ...' or 'notes')", _config.EnableNotes, val =>
+                      {
+                          _config.EnableNotes = val; _config.Save();
+                      }));
+                      modulesCard.Children.Add(CreateToggle("Custom shortcuts and aliases", _config.EnableShortcuts, val =>
+                      {
+                          _config.EnableShortcuts = val; _config.Save();
+                      }));
+                      modulesCard.Children.Add(CreateToggle("Favorites and pin controls", _config.EnableFavorites, val =>
+                      {
+                          _config.EnableFavorites = val; _config.Save();
+                          if (_searchBox != null) UpdateResults(_searchBox.Text);
+                      }));
+                      modulesCard.Children.Add(CreateToggle("Selected-folder search ('folder ...')", _config.EnableFolderSearch, val =>
+                      {
+                          _config.EnableFolderSearch = val; _config.Save(); _folderCache = null; _folderCachePath = "";
+                      }));
+                      modulesCard.Children.Add(CreateToggle("Web search fallback", _config.SearchWeb, val =>
                       {
                           _config.SearchWeb = val; _config.Save();
                       }));
-                      sp.Children.Add(CreateToggle("Run Automatically on Windows Startup", IsStartupEnabled(), val =>
+                      modulesCard.Children.Add(CreateToggle("AI answers ('ai ...')", _config.EnableAI, val =>
                       {
-                          SetStartup(val);
+                          _config.EnableAI = val; _config.Save();
                       }));
+                      tabs.Items.Add(new TabItem { Header = "Search", Content = WrapSettingsPage(searchPage) });
 
-                      scroll.Content = sp;
-                      panelBorder.Child = scroll;
+                      var shortcutsPage = CreateSettingsPage();
+                      var aliasCard = CreateSettingsCard(shortcutsPage, "Your custom commands", "Create any keyword. Target a website, app shortcut, executable or folder.");
+                      var aliasForm = new Grid { Margin = new Thickness(0, 4, 0, 8) };
+                      aliasForm.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                      aliasForm.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+                      _aliasNameBox = new TextBox
+                      {
+                          FontSize = 12.5, Padding = new Thickness(9, 7, 9, 7),
+                          Margin = new Thickness(0, 0, 8, 0), ToolTip = "Shortcut name, e.g. gem"
+                      };
+                      _aliasTargetBox = new TextBox
+                      {
+                          FontSize = 12.5, Padding = new Thickness(9, 7, 9, 7),
+                          ToolTip = "Website URL or local app/folder path"
+                      };
+                      Grid.SetColumn(_aliasNameBox, 0);
+                      Grid.SetColumn(_aliasTargetBox, 1);
+                      aliasForm.Children.Add(_aliasNameBox);
+                      aliasForm.Children.Add(_aliasTargetBox);
+                      aliasCard.Children.Add(aliasForm);
+                      aliasCard.Children.Add(CreateSettingsInfo("Examples: gem → https://gemini.google.com; work → a folder path; editor → a local .exe path."));
+                      var addAliasBtn = CreateActionButton("＋  Add / update shortcut", true);
+                      addAliasBtn.HorizontalAlignment = HorizontalAlignment.Left;
+                      addAliasBtn.Click += (s, e) => AddOrUpdateShortcut();
+                      aliasCard.Children.Add(addAliasBtn);
+                      _shortcutList = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+                      aliasCard.Children.Add(_shortcutList);
+                      UpdateShortcutList();
+                      var favoritesCard = CreateSettingsCard(shortcutsPage, "Pinned favorites", "Click the star beside a result. Type 'fav' to open your favorites board.");
+                      favoritesCard.Children.Add(CreateSettingsInfo("Websites, apps, files and folders can be pinned. Favorites are stored locally."));
+                      tabs.Items.Add(new TabItem { Header = "Shortcuts", Content = WrapSettingsPage(shortcutsPage) });
+
+                      var folderPage = CreateSettingsPage();
+                      var folderCard = CreateSettingsCard(folderPage, "Search one chosen folder", "No drive-wide index. A temporary cache is built only when you type 'folder ...'.");
+                      _folderPathText = new TextBlock
+                      {
+                          Text = string.IsNullOrWhiteSpace(_config.SearchFolderPath) ? "No folder selected yet." : _config.SearchFolderPath,
+                          Foreground = _secondaryTextBrush,
+                          TextWrapping = TextWrapping.Wrap,
+                          FontSize = 11.5,
+                          Margin = new Thickness(0, 4, 0, 10),
+                          Tag = "muted"
+                      };
+                      folderCard.Children.Add(_folderPathText);
+                      var folderButtons = new WrapPanel();
+                      var chooseFolderBtn = CreateActionButton("Choose folder…", true);
+                      chooseFolderBtn.Click += (s, e) => ChooseSearchFolder();
+                      folderButtons.Children.Add(chooseFolderBtn);
+                      var clearFolderBtn = CreateActionButton("Clear selection", false);
+                      clearFolderBtn.Margin = new Thickness(8, 0, 0, 0);
+                      clearFolderBtn.Click += (s, e) =>
+                      {
+                          _config.SearchFolderPath = "";
+                          _config.Save();
+                          _folderCache = null; _folderCachePath = "";
+                          if (_folderPathText != null) _folderPathText.Text = "No folder selected yet.";
+                      };
+                      folderButtons.Children.Add(clearFolderBtn);
+                      folderCard.Children.Add(folderButtons);
+                      folderCard.Children.Add(CreateToggle("Include subfolders (slower)", _config.IncludeSubfolders, val =>
+                      {
+                          _config.IncludeSubfolders = val; _config.Save(); _folderCache = null; _folderCachePath = "";
+                      }));
+                      tabs.Items.Add(new TabItem { Header = "Folders", Content = WrapSettingsPage(folderPage) });
+
+                      var aiPage = CreateSettingsPage();
+                      var aiCard = CreateSettingsCard(aiPage, "Google Gemini", "AI requests run only when you type 'ai your question' and press Enter.");
+                      aiCard.Children.Add(CreateSettingsLabel("Model name"));
+                      _aiModelBox = new TextBox
+                      {
+                          Text = string.IsNullOrWhiteSpace(_config.AiModel) ? "gemini-3.5-flash-lite" : _config.AiModel,
+                          FontSize = 12.5, Padding = new Thickness(9, 7, 9, 7),
+                          Margin = new Thickness(0, 2, 0, 9),
+                          ToolTip = "Enter the model ID manually; there is no fixed model dropdown."
+                      };
+                      aiCard.Children.Add(_aiModelBox);
+                      aiCard.Children.Add(CreateSettingsLabel("API key"));
+                      _aiKeyBox = new PasswordBox
+                      {
+                          FontSize = 12.5, Padding = new Thickness(9, 7, 9, 7),
+                          Margin = new Thickness(0, 2, 0, 6),
+                          ToolTip = "Paste your Gemini API key; it is encrypted for your Windows user."
+                      };
+                      aiCard.Children.Add(_aiKeyBox);
+                      _aiKeyStatusText = CreateSettingsInfo(HasSavedAiKey()
+                          ? "An encrypted key is saved. Enter a new key to replace it."
+                          : "No API key saved yet. The key is encrypted locally using Windows DPAPI.");
+                      aiCard.Children.Add(_aiKeyStatusText);
+                      var aiButtons = new WrapPanel { Margin = new Thickness(0, 7, 0, 0) };
+                      var saveAiBtn = CreateActionButton("Save AI settings", true);
+                      saveAiBtn.Click += (s, e) => SaveAiSettings();
+                      aiButtons.Children.Add(saveAiBtn);
+                      var removeAiBtn = CreateActionButton("Remove saved key", false);
+                      removeAiBtn.Margin = new Thickness(8, 0, 0, 0);
+                      removeAiBtn.Click += (s, e) => RemoveAiKey();
+                      aiButtons.Children.Add(removeAiBtn);
+                      aiCard.Children.Add(aiButtons);
+                      aiCard.Children.Add(CreateSettingsInfo("Privacy: prompts go to Google only when you run an AI command. Avoid sending sensitive information."));
+                      tabs.Items.Add(new TabItem { Header = "AI", Content = WrapSettingsPage(aiPage) });
+
+                      root.Children.Add(tabs);
+                      panelBorder.Child = root;
                       return panelBorder;
                   }
 
+                  private StackPanel CreateSettingsPage()
+                  {
+                      return new StackPanel { Margin = new Thickness(2, 8, 8, 8) };
+                  }
+
+                  private ScrollViewer WrapSettingsPage(UIElement page)
+                  {
+                      return new ScrollViewer
+                      {
+                          Content = page,
+                          Background = Brushes.Transparent,
+                          VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                          HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                          MaxHeight = 345
+                      };
+                  }
+
+                  private StackPanel CreateSettingsCard(Panel parent, string title, string description)
+                  {
+                      var cardBorder = new Border
+                      {
+                          Background = new SolidColorBrush(Color.FromArgb(_isLightTheme ? (byte)238 : (byte)32, 255, 255, 255)),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(_isLightTheme ? (byte)65 : (byte)38, 145, 155, 175)),
+                          BorderThickness = new Thickness(1),
+                          CornerRadius = new CornerRadius(11),
+                          Padding = new Thickness(13, 11, 13, 12),
+                          Margin = new Thickness(0, 0, 0, 10)
+                      };
+                      var card = new StackPanel();
+                      card.Children.Add(new TextBlock
+                      {
+                          Text = title, FontSize = 12.5, FontWeight = FontWeights.Bold,
+                          Foreground = _primaryTextBrush, Margin = new Thickness(0, 0, 0, 2)
+                      });
+                      if (!string.IsNullOrWhiteSpace(description)) card.Children.Add(CreateSettingsInfo(description));
+                      cardBorder.Child = card;
+                      parent.Children.Add(cardBorder);
+                      return card;
+                  }
+
+                  private TextBlock CreateSettingsLabel(string text)
+                  {
+                      return new TextBlock { Text = text, FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = _primaryTextBrush };
+                  }
+
+                  private TextBlock CreateSettingsInfo(string text)
+                  {
+                      return new TextBlock
+                      {
+                          Text = text, FontSize = 11, Foreground = _secondaryTextBrush,
+                          TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 5), Tag = "muted"
+                      };
+                  }
+
+                  private Button CreateActionButton(string text, bool primary)
+                  {
+                      byte[] p = GetActiveThemePalette();
+                      return new Button
+                      {
+                          Content = text, FontSize = 11.5, FontWeight = FontWeights.SemiBold,
+                          Foreground = primary ? Brushes.White : _primaryTextBrush,
+                          Background = primary ? new SolidColorBrush(Color.FromRgb(p[3], p[4], p[5])) : Brushes.Transparent,
+                          BorderBrush = primary ? Brushes.Transparent : new SolidColorBrush(Color.FromArgb(90, 135, 145, 165)),
+                          BorderThickness = new Thickness(primary ? 0 : 1),
+                          Padding = new Thickness(12, 7, 12, 7), Margin = new Thickness(0, 3, 0, 0),
+                          Cursor = Cursors.Hand, Tag = primary ? "primaryAction" : "secondaryAction"
+                      };
+                  }
+
+                  private void RefreshSettingsTheme(DependencyObject root)
+                  {
+                      if (root == null) return;
+                      var tb = root as TextBlock;
+                      if (tb != null)
+                      {
+                          string role = tb.Tag as string;
+                          if (role == "muted") tb.Foreground = _secondaryTextBrush;
+                          else if (role == "accent") tb.Foreground = new SolidColorBrush(Color.FromRgb(0, 120, 215));
+                          else tb.Foreground = _primaryTextBrush;
+                      }
+                      var textBox = root as TextBox;
+                      if (textBox != null)
+                      {
+                          textBox.Foreground = _primaryTextBrush;
+                          textBox.Background = _isLightTheme ? Brushes.White : new SolidColorBrush(Color.FromArgb(35, 255, 255, 255));
+                          textBox.BorderBrush = new SolidColorBrush(Color.FromArgb(_isLightTheme ? (byte)90 : (byte)65, 130, 140, 160));
+                      }
+                      var passwordBox = root as PasswordBox;
+                      if (passwordBox != null)
+                      {
+                          passwordBox.Foreground = _primaryTextBrush;
+                          passwordBox.Background = _isLightTheme ? Brushes.White : new SolidColorBrush(Color.FromArgb(35, 255, 255, 255));
+                          passwordBox.BorderBrush = new SolidColorBrush(Color.FromArgb(_isLightTheme ? (byte)90 : (byte)65, 130, 140, 160));
+                      }
+                      var button = root as Button;
+                      if (button != null)
+                      {
+                          string role = button.Tag as string;
+                          if (role == "primaryAction")
+                          {
+                              byte[] palette = GetActiveThemePalette();
+                              button.Background = new SolidColorBrush(Color.FromRgb(palette[3], palette[4], palette[5]));
+                              button.Foreground = Brushes.White;
+                          }
+                          else if (role == "secondaryAction")
+                          {
+                              button.Background = Brushes.Transparent;
+                              button.Foreground = _primaryTextBrush;
+                          }
+                      }
+                      var checkBox = root as CheckBox;
+                      if (checkBox != null && checkBox.Content is TextBlock)
+                          ((TextBlock)checkBox.Content).Foreground = _primaryTextBrush;
+                      var tabItem = root as TabItem;
+                      if (tabItem != null) tabItem.Foreground = _primaryTextBrush;
+                      foreach (object child in LogicalTreeHelper.GetChildren(root))
+                      {
+                          var dependencyChild = child as DependencyObject;
+                          if (dependencyChild != null) RefreshSettingsTheme(dependencyChild);
+                      }
+                  }
                   private TextBlock CreateSectionHeader(string text)
                   {
                       return new TextBlock
@@ -1637,6 +1915,8 @@ jobs:
                       _searchBox.Clear();
                       _resultsList.Visibility = Visibility.Collapsed;
                       _notesBoard.Visibility = Visibility.Collapsed;
+                      if (_favoritesBoard != null) _favoritesBoard.Visibility = Visibility.Collapsed;
+                      if (_aiBoard != null) _aiBoard.Visibility = Visibility.Collapsed;
                       _settingsPanel.Visibility = Visibility.Collapsed;
 
                       Show();
@@ -1703,6 +1983,8 @@ jobs:
                       if (!IsVisible) return;
                       Hide();
                       _resultsList.Items.Clear();
+                      _folderCache = null;
+                      _folderCachePath = "";
                       TrimMemory();
                   }
 
