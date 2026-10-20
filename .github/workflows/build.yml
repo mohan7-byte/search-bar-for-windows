@@ -159,7 +159,6 @@ jobs:
 
               public class SearchWindow : Window
               {
-                  // Win32 APIs for Low-Level Win+S Hook & RAM Trimming
                   [DllImport("user32.dll", SetLastError = true)]
                   private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
 
@@ -214,7 +213,6 @@ jobs:
                       Topmost = true;
                       ShowInTaskbar = false;
 
-                      // Center horizontally, upper-middle vertically
                       Left = (SystemParameters.PrimaryScreenWidth - Width) / 2;
                       Top = SystemParameters.PrimaryScreenHeight * 0.22;
 
@@ -239,7 +237,6 @@ jobs:
 
                       var stack = new StackPanel();
 
-                      // Top Search Bar Row
                       var searchGrid = new Grid { Margin = new Thickness(16, 12, 16, 12) };
                       searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                       searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -292,20 +289,18 @@ jobs:
                       searchGrid.Children.Add(gearBtn);
                       stack.Children.Add(searchGrid);
 
-                      // Settings Panel (Collapsible)
                       _settingsPanel = BuildSettingsPanel();
                       stack.Children.Add(_settingsPanel);
 
-                      // Results ListBox
                       _resultsList = new ListBox
                       {
                           Background = Brushes.Transparent,
                           BorderThickness = new Thickness(0),
                           MaxHeight = 340,
                           Margin = new Thickness(10, 0, 10, 10),
-                          Visibility = Visibility.Collapsed,
-                          ScrollViewer.HorizontalScrollBarVisibilityProperty = ScrollBarVisibility.Disabled
+                          Visibility = Visibility.Collapsed
                       };
+                      ScrollViewer.SetHorizontalScrollBarVisibility(_resultsList, ScrollBarVisibility.Disabled);
                       _resultsList.MouseDoubleClick += (s, e) => ExecuteSelected();
                       stack.Children.Add(_resultsList);
 
@@ -395,7 +390,6 @@ jobs:
 
                   private void RefreshCaches()
                   {
-                      // 1. Apps Cache
                       _appCache.Clear();
                       if (_config.SearchApps)
                       {
@@ -432,7 +426,6 @@ jobs:
                           }
                       }
 
-                      // 2. Files Cache (Freed completely when turned off)
                       if (_config.SearchFiles)
                       {
                           _fileCache = new List<SearchItem>();
@@ -465,7 +458,6 @@ jobs:
                           _fileCache = null;
                       }
 
-                      // 3. System Commands Cache
                       if (_config.SearchSystem)
                       {
                           _sysCache = new List<SearchItem>
@@ -692,7 +684,6 @@ jobs:
                       if (nCode >= 0 && (wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104))
                       {
                           int vkCode = Marshal.ReadInt32(lParam);
-                          // 0x53 = 'S' key, 0x5B = Left Win, 0x5C = Right Win
                           if (vkCode == 0x53)
                           {
                               bool winDown = (GetAsyncKeyState(0x5B) & 0x8000) != 0 ||
@@ -700,7 +691,7 @@ jobs:
                               if (winDown)
                               {
                                   Dispatcher.BeginInvoke(new Action(ToggleSearch));
-                                  return (IntPtr)1; // Block default Windows 10 Search from opening
+                                  return (IntPtr)1;
                               }
                           }
                       }
@@ -749,7 +740,7 @@ jobs:
                       {
                           using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", false))
                           {
-                              return key?.GetValue("ModernSearch") != null;
+                              return key != null && key.GetValue("ModernSearch") != null;
                           }
                       }
                       catch { return false; }
@@ -761,10 +752,11 @@ jobs:
                       {
                           using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
                           {
+                              if (key == null) return;
                               if (enable)
-                                  key?.SetValue("ModernSearch", "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
+                                  key.SetValue("ModernSearch", "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
                               else
-                                  key?.DeleteValue("ModernSearch", false);
+                                  key.DeleteValue("ModernSearch", false);
                           }
                       }
                       catch { }
