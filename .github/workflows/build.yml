@@ -341,7 +341,7 @@ jobs:
                           {
                               AccentState = _config.EnableAcrylic ? 3 : 0, // 3 = ACCENT_ENABLE_BLURBEHIND
                               AccentFlags = 2,
-                              GradientColor = 0x99141418
+                              GradientColor = unchecked((int)0x99141418)
                           };
                           int size = Marshal.SizeOf(accent);
                           IntPtr ptr = Marshal.AllocHGlobal(size);
