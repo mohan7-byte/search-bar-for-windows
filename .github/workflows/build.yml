@@ -1894,6 +1894,11 @@ jobs:
                               button.Background = Brushes.Transparent;
                               button.Foreground = _primaryTextBrush;
                           }
+                          else if (role != "themeButton")
+                          {
+                              // Buttons created by the shortcut list and AI panel also need light-mode contrast.
+                              button.Foreground = _primaryTextBrush;
+                          }
                       }
                       var checkBox = root as CheckBox;
                       if (checkBox != null && checkBox.Content is TextBlock)
