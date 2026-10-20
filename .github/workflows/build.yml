@@ -56,7 +56,7 @@ jobs:
               Convert-PngToIco "temp_icon.png" "src/icon.ico"
           }
 
-          # 2. Create Project File (.NET Framework 4.8 - Native to Windows 10, tiny EXE)
+          # 2. Create Project File (.NET Framework 4.8 - Native to Windows 10)
           $csproj = @'
           <Project Sdk="Microsoft.NET.Sdk">
             <PropertyGroup>
@@ -71,6 +71,8 @@ jobs:
               <DebugType>none</DebugType>
             </PropertyGroup>
             <ItemGroup>
+              <Reference Include="System.Data" />
+              <Reference Include="System.Drawing" />
               <EmbeddedResource Include="icon.ico"/>
             </ItemGroup>
           </Project>
@@ -81,6 +83,7 @@ jobs:
           $csCode = @'
           using System;
           using System.Collections.Generic;
+          using System.Data;
           using System.Diagnostics;
           using System.IO;
           using System.Linq;
@@ -89,9 +92,12 @@ jobs:
           using System.Windows;
           using System.Windows.Controls;
           using System.Windows.Input;
+          using System.Windows.Interop;
           using System.Windows.Media;
           using System.Windows.Media.Animation;
           using System.Windows.Media.Effects;
+          using System.Windows.Media.Imaging;
+          using System.Windows.Threading;
           using Microsoft.Win32;
           using Forms = System.Windows.Forms;
 
@@ -103,31 +109,60 @@ jobs:
                   public string Subtitle { get; set; }
                   public string TargetPath { get; set; }
                   public string Category { get; set; }
-                  public bool IsWeb { get; set; }
+                  public string Emoji { get; set; }
+                  public Action CustomAction { get; set; }
+              }
+
+              public class NoteItem
+              {
+                  public string Id { get; set; }
+                  public string Text { get; set; }
+                  public string Timestamp { get; set; }
+                  public int ColorIndex { get; set; }
               }
 
               public class AppConfig
               {
                   public bool SearchApps { get; set; } = true;
                   public bool SearchFiles { get; set; } = false;
-                  public bool SearchSystem { get; set; } = false;
+                  public bool SearchSystem { get; set; } = true;
                   public bool SearchWeb { get; set; } = false;
+                  public bool EnableCalc { get; set; } = true;
+                  public bool EnableKill { get; set; } = true;
+                  public bool EnableNotes { get; set; } = true;
+                  public bool EnableAcrylic { get; set; } = true;
+                  public int ThemeIndex { get; set; } = 0;
+                  public double WindowWidth { get; set; } = 660;
+                  public double PosXPercent { get; set; } = 50;
+                  public double PosYPercent { get; set; } = 22;
+                  public double CornerRadiusVal { get; set; } = 16;
 
-                  private static string ConfigPath => Path.Combine(
+                  public static string FolderPath => Path.Combine(
                       Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                      "ModernSearch", "settings.cfg");
+                      "ModernSearch");
+
+                  private static string ConfigPath => Path.Combine(FolderPath, "settings.cfg");
 
                   public void Save()
                   {
                       try
                       {
-                          Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
+                          Directory.CreateDirectory(FolderPath);
                           File.WriteAllLines(ConfigPath, new[]
                           {
                               "SearchApps=" + SearchApps,
                               "SearchFiles=" + SearchFiles,
                               "SearchSystem=" + SearchSystem,
-                              "SearchWeb=" + SearchWeb
+                              "SearchWeb=" + SearchWeb,
+                              "EnableCalc=" + EnableCalc,
+                              "EnableKill=" + EnableKill,
+                              "EnableNotes=" + EnableNotes,
+                              "EnableAcrylic=" + EnableAcrylic,
+                              "ThemeIndex=" + ThemeIndex,
+                              "WindowWidth=" + WindowWidth,
+                              "PosXPercent=" + PosXPercent,
+                              "PosYPercent=" + PosYPercent,
+                              "CornerRadiusVal=" + CornerRadiusVal
                           });
                       }
                       catch { }
@@ -144,11 +179,25 @@ jobs:
                               {
                                   var parts = line.Split('=');
                                   if (parts.Length != 2) continue;
-                                  bool val = parts[1].Trim().Equals("True", StringComparison.OrdinalIgnoreCase);
-                                  if (parts[0] == "SearchApps") cfg.SearchApps = val;
-                                  if (parts[0] == "SearchFiles") cfg.SearchFiles = val;
-                                  if (parts[0] == "SearchSystem") cfg.SearchSystem = val;
-                                  if (parts[0] == "SearchWeb") cfg.SearchWeb = val;
+                                  string k = parts[0].Trim();
+                                  string v = parts[1].Trim();
+                                  bool bVal = v.Equals("True", StringComparison.OrdinalIgnoreCase);
+                                  double dVal;
+                                  int iVal;
+
+                                  if (k == "SearchApps") cfg.SearchApps = bVal;
+                                  else if (k == "SearchFiles") cfg.SearchFiles = bVal;
+                                  else if (k == "SearchSystem") cfg.SearchSystem = bVal;
+                                  else if (k == "SearchWeb") cfg.SearchWeb = bVal;
+                                  else if (k == "EnableCalc") cfg.EnableCalc = bVal;
+                                  else if (k == "EnableKill") cfg.EnableKill = bVal;
+                                  else if (k == "EnableNotes") cfg.EnableNotes = bVal;
+                                  else if (k == "EnableAcrylic") cfg.EnableAcrylic = bVal;
+                                  else if (k == "ThemeIndex" && int.TryParse(v, out iVal)) cfg.ThemeIndex = iVal;
+                                  else if (k == "WindowWidth" && double.TryParse(v, out dVal)) cfg.WindowWidth = dVal;
+                                  else if (k == "PosXPercent" && double.TryParse(v, out dVal)) cfg.PosXPercent = dVal;
+                                  else if (k == "PosYPercent" && double.TryParse(v, out dVal)) cfg.PosYPercent = dVal;
+                                  else if (k == "CornerRadiusVal" && double.TryParse(v, out dVal)) cfg.CornerRadiusVal = dVal;
                               }
                           }
                       }
@@ -159,53 +208,160 @@ jobs:
 
               public class SearchWindow : Window
               {
-                  [DllImport("user32.dll", SetLastError = true)]
-                  private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
-
-                  [DllImport("user32.dll", SetLastError = true)]
-                  private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+                  // Win32 Hotkey, Focus & Acrylic Blur APIs
+                  [DllImport("user32.dll")]
+                  private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
 
                   [DllImport("user32.dll")]
-                  private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+                  private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+                  [DllImport("user32.dll")]
+                  private static extern IntPtr GetForegroundWindow();
+
+                  [DllImport("user32.dll")]
+                  private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr ProcessId);
 
                   [DllImport("kernel32.dll")]
-                  private static extern IntPtr GetModuleHandle(string lpModuleName);
+                  private static extern uint GetCurrentThreadId();
 
                   [DllImport("user32.dll")]
-                  private static extern short GetAsyncKeyState(int vKey);
+                  private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+                  [DllImport("user32.dll")]
+                  private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+                  [DllImport("user32.dll")]
+                  private static extern bool BringWindowToTop(IntPtr hWnd);
+
+                  [DllImport("user32.dll")]
+                  private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+                  [DllImport("shell32.dll")]
+                  private static extern int SHEmptyRecycleBin(IntPtr hwnd, string pszRootPath, uint dwFlags);
 
                   [DllImport("psapi.dll")]
                   private static extern int EmptyWorkingSet(IntPtr hwProc);
 
-                  private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-                  private LowLevelKeyboardProc _hookProc;
-                  private IntPtr _hookId = IntPtr.Zero;
+                  [DllImport("user32.dll")]
+                  private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
+
+                  [StructLayout(LayoutKind.Sequential)]
+                  private struct AccentPolicy
+                  {
+                      public int AccentState;
+                      public int AccentFlags;
+                      public int GradientColor;
+                      public int AnimationId;
+                  }
+
+                  [StructLayout(LayoutKind.Sequential)]
+                  private struct WindowCompositionAttributeData
+                  {
+                      public int Attribute;
+                      public IntPtr Data;
+                      public int SizeOfData;
+                  }
+
+                  private const int HOTKEY_ID = 9001;
+                  private const uint MOD_ALT = 0x0001;
+                  private const uint VK_SPACE = 0x20;
 
                   private AppConfig _config;
                   private List<SearchItem> _appCache = new List<SearchItem>();
                   private List<SearchItem> _fileCache = null;
                   private List<SearchItem> _sysCache = null;
+                  private Dictionary<string, int> _usageCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                  private Dictionary<string, ImageSource> _iconCache = new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
+                  private List<NoteItem> _notes = new List<NoteItem>();
 
+                  private Border _mainBorder;
                   private TextBox _searchBox;
+                  private TextBlock _placeholderText;
+                  private TextBlock _searchIcon;
                   private ListBox _resultsList;
+                  private Border _notesBoard;
+                  private StackPanel _notesContainer;
                   private Border _settingsPanel;
                   private TranslateTransform _slideTransform;
+                  private ScaleTransform _scaleTransform;
                   private Forms.NotifyIcon _trayIcon;
+                  private bool _isShowing = false;
+
+                  // Theme Palettes: [BgR, BgG, BgB, AccentR, AccentG, AccentB, BorderAlpha]
+                  private readonly byte[][] _themes = new byte[][]
+                  {
+                      new byte[] { 22, 23, 28,   110, 170, 255, 65 }, // 0: Frosted Dark
+                      new byte[] { 14, 21, 38,   56, 189, 248,  80 }, // 1: Midnight Ocean
+                      new byte[] { 8,  8,  10,   168, 85, 247,  75 }, // 2: OLED Pitch Black
+                      new byte[] { 24, 15, 36,   244, 63, 94,   90 }  // 3: Cyberpunk Neon
+                  };
 
                   public SearchWindow()
                   {
                       _config = AppConfig.Load();
+                      LoadUsageData();
+                      LoadNotes();
                       BuildUI();
+                      ApplyThemeAndGeometry();
                       SetupTrayIcon();
                       RefreshCaches();
-                      InstallKeyboardHook();
+                  }
+
+                  protected override void OnSourceInitialized(EventArgs e)
+                  {
+                      base.OnSourceInitialized(e);
+                      var helper = new WindowInteropHelper(this);
+                      var source = HwndSource.FromHwnd(helper.Handle);
+                      source.AddHook(HwndHook);
+
+                      // Register Alt + Space globally
+                      RegisterHotKey(helper.Handle, HOTKEY_ID, MOD_ALT, VK_SPACE);
+                      UpdateAcrylicBlur();
                       TrimMemory();
+                  }
+
+                  private IntPtr HwndHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+                  {
+                      const int WM_HOTKEY = 0x0312;
+                      if (msg == WM_HOTKEY && wParam.ToInt32() == HOTKEY_ID)
+                      {
+                          ToggleSearch();
+                          handled = true;
+                      }
+                      return IntPtr.Zero;
+                  }
+
+                  private void UpdateAcrylicBlur()
+                  {
+                      try
+                      {
+                          var hwnd = new WindowInteropHelper(this).Handle;
+                          if (hwnd == IntPtr.Zero) return;
+                          var accent = new AccentPolicy
+                          {
+                              AccentState = _config.EnableAcrylic ? 3 : 0, // 3 = ACCENT_ENABLE_BLURBEHIND
+                              AccentFlags = 2,
+                              GradientColor = 0x99141418
+                          };
+                          int size = Marshal.SizeOf(accent);
+                          IntPtr ptr = Marshal.AllocHGlobal(size);
+                          Marshal.StructureToPtr(accent, ptr, false);
+                          var data = new WindowCompositionAttributeData
+                          {
+                              Attribute = 19, // WCA_ACCENT_POLICY
+                              SizeOfData = size,
+                              Data = ptr
+                          };
+                          SetWindowCompositionAttribute(hwnd, ref data);
+                          Marshal.FreeHGlobal(ptr);
+                      }
+                      catch { }
                   }
 
                   private void BuildUI()
                   {
                       Title = "ModernSearch";
-                      Width = 640;
+                      Width = _config.WindowWidth;
                       SizeToContent = SizeToContent.Height;
                       WindowStyle = WindowStyle.None;
                       AllowsTransparency = true;
@@ -213,67 +369,104 @@ jobs:
                       Topmost = true;
                       ShowInTaskbar = false;
 
-                      Left = (SystemParameters.PrimaryScreenWidth - Width) / 2;
-                      Top = SystemParameters.PrimaryScreenHeight * 0.22;
-
-                      var rootGrid = new Grid { Margin = new Thickness(20) };
+                      var rootGrid = new Grid { Margin = new Thickness(24) };
+                      var transformGroup = new TransformGroup();
                       _slideTransform = new TranslateTransform(0, 0);
-                      rootGrid.RenderTransform = _slideTransform;
+                      _scaleTransform = new ScaleTransform(1, 1, 300, 0);
+                      transformGroup.Children.Add(_scaleTransform);
+                      transformGroup.Children.Add(_slideTransform);
+                      rootGrid.RenderTransform = transformGroup;
 
-                      var mainBorder = new Border
+                      _mainBorder = new Border
                       {
-                          CornerRadius = new CornerRadius(16),
-                          Background = new SolidColorBrush(Color.FromRgb(26, 27, 32)),
-                          BorderBrush = new SolidColorBrush(Color.FromArgb(65, 255, 255, 255)),
-                          BorderThickness = new Thickness(1.2),
+                          CornerRadius = new CornerRadius(_config.CornerRadiusVal),
+                          BorderThickness = new Thickness(1.3),
                           Effect = new DropShadowEffect
                           {
-                              BlurRadius = 28,
-                              ShadowDepth = 8,
-                              Opacity = 0.65,
+                              BlurRadius = 32,
+                              ShadowDepth = 10,
+                              Opacity = 0.72,
                               Color = Colors.Black
                           }
                       };
 
                       var stack = new StackPanel();
 
-                      var searchGrid = new Grid { Margin = new Thickness(16, 12, 16, 12) };
+                      // Top Search Bar Row
+                      var searchGrid = new Grid { Margin = new Thickness(18, 14, 18, 14) };
                       searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                       searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                       searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                      searchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-                      var searchIcon = new TextBlock
+                      _searchIcon = new TextBlock
                       {
-                          Text = "🔍",
-                          FontSize = 18,
-                          Foreground = new SolidColorBrush(Color.FromRgb(120, 175, 255)),
+                          Text = "⚡",
+                          FontSize = 20,
                           VerticalAlignment = VerticalAlignment.Center,
-                          Margin = new Thickness(2, 0, 12, 0)
+                          Margin = new Thickness(0, 0, 12, 0)
                       };
-                      Grid.SetColumn(searchIcon, 0);
+                      Grid.SetColumn(_searchIcon, 0);
+
+                      var inputContainer = new Grid();
+                      _placeholderText = new TextBlock
+                      {
+                          Text = "Search apps, math (45*18%), 'note', 'kill', 'vol 50'...",
+                          FontSize = 17,
+                          Foreground = new SolidColorBrush(Color.FromRgb(115, 120, 138)),
+                          VerticalAlignment = VerticalAlignment.Center,
+                          IsHitTestVisible = false,
+                          Margin = new Thickness(2, 0, 0, 0)
+                      };
 
                       _searchBox = new TextBox
                       {
                           FontSize = 20,
+                          FontWeight = FontWeights.Medium,
                           Foreground = Brushes.White,
                           Background = Brushes.Transparent,
                           BorderThickness = new Thickness(0),
-                          CaretBrush = new SolidColorBrush(Color.FromRgb(120, 175, 255)),
                           VerticalContentAlignment = VerticalAlignment.Center
                       };
                       _searchBox.TextChanged += OnSearchTextChanged;
                       _searchBox.PreviewKeyDown += OnSearchKeyDown;
-                      Grid.SetColumn(_searchBox, 1);
 
+                      inputContainer.Children.Add(_placeholderText);
+                      inputContainer.Children.Add(_searchBox);
+                      Grid.SetColumn(inputContainer, 1);
+
+                      // Quick Notes Pill Button
+                      var notesBtn = new Button
+                      {
+                          Content = "📌 Notes",
+                          FontSize = 12,
+                          FontWeight = FontWeights.SemiBold,
+                          Foreground = new SolidColorBrush(Color.FromRgb(220, 225, 240)),
+                          Background = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)),
+                          BorderThickness = new Thickness(0),
+                          Cursor = Cursors.Hand,
+                          Padding = new Thickness(10, 5, 10, 5),
+                          Margin = new Thickness(8, 0, 6, 0),
+                          ToolTip = "Open Visual Sticky Notes Board (or type 'note Your Text')"
+                      };
+                      notesBtn.Click += (s, e) =>
+                      {
+                          _searchBox.Text = "notes";
+                          _searchBox.CaretIndex = _searchBox.Text.Length;
+                          _searchBox.Focus();
+                      };
+                      Grid.SetColumn(notesBtn, 2);
+
+                      // Settings Gear Button
                       var gearBtn = new Button
                       {
                           Content = "⚙",
                           FontSize = 18,
-                          Foreground = new SolidColorBrush(Color.FromRgb(170, 175, 190)),
+                          Foreground = new SolidColorBrush(Color.FromRgb(175, 180, 195)),
                           Background = Brushes.Transparent,
                           BorderThickness = new Thickness(0),
                           Cursor = Cursors.Hand,
-                          ToolTip = "Configure Search Scopes (RAM Saver)",
+                          ToolTip = "Customize Themes, Position, Size & Modules",
                           Padding = new Thickness(8, 2, 8, 2)
                       };
                       gearBtn.Click += (s, e) =>
@@ -282,91 +475,396 @@ jobs:
                               ? Visibility.Collapsed
                               : Visibility.Visible;
                       };
-                      Grid.SetColumn(gearBtn, 2);
+                      Grid.SetColumn(gearBtn, 3);
 
-                      searchGrid.Children.Add(searchIcon);
-                      searchGrid.Children.Add(_searchBox);
+                      searchGrid.Children.Add(_searchIcon);
+                      searchGrid.Children.Add(inputContainer);
+                      searchGrid.Children.Add(notesBtn);
                       searchGrid.Children.Add(gearBtn);
                       stack.Children.Add(searchGrid);
 
+                      // Settings Panel
                       _settingsPanel = BuildSettingsPanel();
                       stack.Children.Add(_settingsPanel);
 
+                      // Visual Sticky Notes Scratchpad
+                      _notesBoard = BuildNotesBoard();
+                      stack.Children.Add(_notesBoard);
+
+                      // Results ListBox
                       _resultsList = new ListBox
                       {
                           Background = Brushes.Transparent,
                           BorderThickness = new Thickness(0),
-                          MaxHeight = 340,
+                          MaxHeight = 370,
                           Margin = new Thickness(10, 0, 10, 10),
                           Visibility = Visibility.Collapsed
                       };
                       ScrollViewer.SetHorizontalScrollBarVisibility(_resultsList, ScrollBarVisibility.Disabled);
-                      _resultsList.MouseDoubleClick += (s, e) => ExecuteSelected();
+                      _resultsList.MouseDoubleClick += (s, e) => ExecuteSelected(false, false);
+                      _resultsList.SelectionChanged += OnResultSelectionChanged;
                       stack.Children.Add(_resultsList);
 
-                      mainBorder.Child = stack;
-                      rootGrid.Children.Add(mainBorder);
+                      _mainBorder.Child = stack;
+                      rootGrid.Children.Add(_mainBorder);
                       Content = rootGrid;
 
-                      Deactivated += (s, e) => HideSearch();
+                      Deactivated += (s, e) =>
+                      {
+                          if (!_isShowing) HideSearch();
+                      };
+                  }
+
+                  private Border BuildNotesBoard()
+                  {
+                      var board = new Border
+                      {
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)),
+                          BorderThickness = new Thickness(0, 1, 0, 0),
+                          Padding = new Thickness(16, 12, 16, 14),
+                          Visibility = Visibility.Collapsed
+                      };
+
+                      var outerStack = new StackPanel();
+                      var headerGrid = new Grid { Margin = new Thickness(0, 0, 0, 10) };
+                      headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                      headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                      headerGrid.Children.Add(new TextBlock
+                      {
+                          Text = "✨ VISUAL SCRATCHPAD & STICKY NOTES",
+                          FontSize = 11,
+                          FontWeight = FontWeights.Bold,
+                          Foreground = new SolidColorBrush(Color.FromRgb(150, 195, 255))
+                      });
+
+                      var tipText = new TextBlock
+                      {
+                          Text = "Tip: Type 'note <your text>' & press Enter to pin a new card",
+                          FontSize = 11,
+                          Foreground = new SolidColorBrush(Color.FromRgb(140, 145, 165))
+                      };
+                      Grid.SetColumn(tipText, 1);
+                      headerGrid.Children.Add(tipText);
+                      outerStack.Children.Add(headerGrid);
+
+                      var scroll = new ScrollViewer
+                      {
+                          MaxHeight = 290,
+                          VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+                      };
+                      _notesContainer = new StackPanel();
+                      scroll.Content = _notesContainer;
+                      outerStack.Children.Add(scroll);
+
+                      board.Child = outerStack;
+                      return board;
+                  }
+
+                  private void RenderNotesBoard(string filterText)
+                  {
+                      _notesContainer.Children.Clear();
+                      var list = _notes.AsEnumerable();
+                      if (!string.IsNullOrWhiteSpace(filterText))
+                          list = list.Where(n => n.Text.IndexOf(filterText, StringComparison.OrdinalIgnoreCase) >= 0);
+
+                      var notesList = list.ToList();
+                      if (notesList.Count == 0)
+                      {
+                          _notesContainer.Children.Add(new Border
+                          {
+                              CornerRadius = new CornerRadius(10),
+                              Background = new SolidColorBrush(Color.FromArgb(22, 255, 255, 255)),
+                              Padding = new Thickness(16, 18, 16, 18),
+                              Child = new TextBlock
+                              {
+                                  Text = "No sticky notes yet. Type 'note Buy coffee at 5pm' above and hit Enter!",
+                                  Foreground = new SolidColorBrush(Color.FromRgb(170, 175, 190)),
+                                  FontSize = 13,
+                                  HorizontalAlignment = HorizontalAlignment.Center
+                              }
+                          });
+                          return;
+                      }
+
+                      // Gradient pairs for vibrant sticky note cards
+                      Color[][] cardGradients = new Color[][]
+                      {
+                          new[] { Color.FromArgb(65, 59, 130, 246), Color.FromArgb(35, 37, 99, 235) },
+                          new[] { Color.FromArgb(65, 168, 85, 247), Color.FromArgb(35, 126, 34, 206) },
+                          new[] { Color.FromArgb(65, 16, 185, 129), Color.FromArgb(35, 5, 150, 105) },
+                          new[] { Color.FromArgb(65, 245, 158, 11), Color.FromArgb(35, 217, 119, 6) }
+                      };
+
+                      foreach (var note in notesList)
+                      {
+                          var pal = cardGradients[Math.Abs(note.ColorIndex) % cardGradients.Length];
+                          var card = new Border
+                          {
+                              CornerRadius = new CornerRadius(12),
+                              Background = new LinearGradientBrush(pal[0], pal[1], 25),
+                              BorderBrush = new SolidColorBrush(Color.FromArgb(75, 255, 255, 255)),
+                              BorderThickness = new Thickness(1),
+                              Padding = new Thickness(14, 10, 14, 10),
+                              Margin = new Thickness(0, 0, 0, 8)
+                          };
+
+                          var g = new Grid();
+                          g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                          g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                          g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                          var tStack = new StackPanel();
+                          tStack.Children.Add(new TextBlock
+                          {
+                              Text = note.Text,
+                              Foreground = Brushes.White,
+                              FontSize = 14,
+                              FontWeight = FontWeights.Medium,
+                              TextWrapping = TextWrapping.Wrap
+                          });
+                          tStack.Children.Add(new TextBlock
+                          {
+                              Text = "🕒 " + note.Timestamp,
+                              Foreground = new SolidColorBrush(Color.FromRgb(185, 195, 215)),
+                              FontSize = 10,
+                              Margin = new Thickness(0, 4, 0, 0)
+                          });
+                          Grid.SetColumn(tStack, 0);
+
+                          var copyBtn = new Button
+                          {
+                              Content = "📋 Copy",
+                              FontSize = 11,
+                              Foreground = Brushes.White,
+                              Background = new SolidColorBrush(Color.FromArgb(45, 0, 0, 0)),
+                              BorderThickness = new Thickness(0),
+                              Padding = new Thickness(8, 4, 8, 4),
+                              Margin = new Thickness(8, 0, 4, 0),
+                              VerticalAlignment = VerticalAlignment.Center,
+                              Cursor = Cursors.Hand
+                          };
+                          string noteCopy = note.Text;
+                          copyBtn.Click += (s, e) =>
+                          {
+                              try { Clipboard.SetText(noteCopy); } catch { }
+                              HideSearch();
+                          };
+                          Grid.SetColumn(copyBtn, 1);
+
+                          var delBtn = new Button
+                          {
+                              Content = "✕",
+                              FontSize = 12,
+                              Foreground = new SolidColorBrush(Color.FromRgb(255, 140, 140)),
+                              Background = new SolidColorBrush(Color.FromArgb(45, 0, 0, 0)),
+                              BorderThickness = new Thickness(0),
+                              Padding = new Thickness(8, 4, 8, 4),
+                              VerticalAlignment = VerticalAlignment.Center,
+                              Cursor = Cursors.Hand
+                          };
+                          string noteId = note.Id;
+                          delBtn.Click += (s, e) =>
+                          {
+                              _notes.RemoveAll(x => x.Id == noteId);
+                              SaveNotes();
+                              RenderNotesBoard("");
+                          };
+                          Grid.SetColumn(delBtn, 2);
+
+                          g.Children.Add(tStack);
+                          g.Children.Add(copyBtn);
+                          g.Children.Add(delBtn);
+                          card.Child = g;
+                          _notesContainer.Children.Add(card);
+                      }
                   }
 
                   private Border BuildSettingsPanel()
                   {
                       var panelBorder = new Border
                       {
-                          Background = new SolidColorBrush(Color.FromRgb(20, 21, 26)),
-                          BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                          Background = new SolidColorBrush(Color.FromArgb(215, 16, 17, 22)),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(45, 255, 255, 255)),
                           BorderThickness = new Thickness(0, 1, 0, 1),
                           Padding = new Thickness(18, 12, 18, 12),
                           Visibility = Visibility.Collapsed
                       };
 
+                      var scroll = new ScrollViewer
+                      {
+                          MaxHeight = 330,
+                          VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+                      };
+
                       var sp = new StackPanel();
-                      sp.Children.Add(new TextBlock
-                      {
-                          Text = "SEARCH SCOPES (Disable unused options for minimal RAM usage)",
-                          FontSize = 11,
-                          FontWeight = FontWeights.SemiBold,
-                          Foreground = new SolidColorBrush(Color.FromRgb(120, 175, 255)),
-                          Margin = new Thickness(0, 0, 0, 8)
-                      });
 
-                      sp.Children.Add(CreateToggle("Search Installed Apps (Start Menu)", _config.SearchApps, val =>
+                      // Section 1: Theme & Blur
+                      sp.Children.Add(CreateSectionHeader("APPEARANCE, THEME & BLUR"));
+
+                      var themeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+                      string[] themeNames = { "Frosted Dark", "Midnight Ocean", "OLED Black", "Cyberpunk Neon" };
+                      for (int i = 0; i < themeNames.Length; i++)
                       {
-                          _config.SearchApps = val;
+                          int idx = i;
+                          var btn = new Button
+                          {
+                              Content = themeNames[i],
+                              FontSize = 11,
+                              Foreground = Brushes.White,
+                              Background = new SolidColorBrush(Color.FromRgb(_themes[i][3], _themes[i][4], _themes[i][5])),
+                              BorderThickness = new Thickness(0),
+                              Padding = new Thickness(10, 5, 10, 5),
+                              Margin = new Thickness(0, 0, 6, 0),
+                              Cursor = Cursors.Hand
+                          };
+                          btn.Click += (s, e) =>
+                          {
+                              _config.ThemeIndex = idx;
+                              _config.Save();
+                              ApplyThemeAndGeometry();
+                          };
+                          themeRow.Children.Add(btn);
+                      }
+                      sp.Children.Add(themeRow);
+
+                      sp.Children.Add(CreateToggle("Enable Windows Frosted Glass / Blur Effect", _config.EnableAcrylic, val =>
+                      {
+                          _config.EnableAcrylic = val;
                           _config.Save();
-                          RefreshCaches();
+                          UpdateAcrylicBlur();
+                          ApplyThemeAndGeometry();
                       }));
 
-                      sp.Children.Add(CreateToggle("Search Desktop & Documents Files", _config.SearchFiles, val =>
+                      // Section 2: Position & Size Sliders
+                      sp.Children.Add(CreateSectionHeader("CUSTOM POSITION & SIZE SLIDERS"));
+
+                      sp.Children.Add(CreateSliderRow("Search Bar Width (px)", 480, 920, _config.WindowWidth, val =>
                       {
-                          _config.SearchFiles = val;
+                          _config.WindowWidth = Math.Round(val);
                           _config.Save();
-                          RefreshCaches();
+                          ApplyThemeAndGeometry();
                       }));
 
-                      sp.Children.Add(CreateToggle("Search System Commands (Control Panel, Shutdown, Lock)", _config.SearchSystem, val =>
+                      sp.Children.Add(CreateSliderRow("Horizontal Position (%)", 10, 90, _config.PosXPercent, val =>
                       {
-                          _config.SearchSystem = val;
+                          _config.PosXPercent = Math.Round(val);
                           _config.Save();
-                          RefreshCaches();
+                          ApplyThemeAndGeometry();
                       }));
 
-                      sp.Children.Add(CreateToggle("Enable Web Search Fallback", _config.SearchWeb, val =>
+                      sp.Children.Add(CreateSliderRow("Vertical Position (%)", 5, 80, _config.PosYPercent, val =>
                       {
-                          _config.SearchWeb = val;
+                          _config.PosYPercent = Math.Round(val);
                           _config.Save();
-                          UpdateResults(_searchBox.Text);
+                          ApplyThemeAndGeometry();
                       }));
 
+                      sp.Children.Add(CreateSliderRow("Corner Roundness", 0, 28, _config.CornerRadiusVal, val =>
+                      {
+                          _config.CornerRadiusVal = Math.Round(val);
+                          _config.Save();
+                          ApplyThemeAndGeometry();
+                      }));
+
+                      // Section 3: Search Scopes (RAM Savers)
+                      sp.Children.Add(CreateSectionHeader("SEARCH MODULES (DISABLE UNUSED FOR MINIMAL RAM)"));
+
+                      sp.Children.Add(CreateToggle("Installed Apps + Real App Icons + Smart Learning", _config.SearchApps, val =>
+                      {
+                          _config.SearchApps = val; _config.Save(); RefreshCaches();
+                      }));
+                      sp.Children.Add(CreateToggle("Instant Math Calculator (e.g. 450 * 18%)", _config.EnableCalc, val =>
+                      {
+                          _config.EnableCalc = val; _config.Save();
+                      }));
+                      sp.Children.Add(CreateToggle("Process Killer ('kill chrome') & Volume ('vol 50')", _config.EnableKill, val =>
+                      {
+                          _config.EnableKill = val; _config.Save();
+                      }));
+                      sp.Children.Add(CreateToggle("Visual Sticky Notes ('note ...' or 'notes')", _config.EnableNotes, val =>
+                      {
+                          _config.EnableNotes = val; _config.Save();
+                      }));
+                      sp.Children.Add(CreateToggle("System & Power Commands (Lock, Sleep, Empty Bin)", _config.SearchSystem, val =>
+                      {
+                          _config.SearchSystem = val; _config.Save(); RefreshCaches();
+                      }));
+                      sp.Children.Add(CreateToggle("Desktop & Documents Files", _config.SearchFiles, val =>
+                      {
+                          _config.SearchFiles = val; _config.Save(); RefreshCaches();
+                      }));
+                      sp.Children.Add(CreateToggle("Web Search Fallback", _config.SearchWeb, val =>
+                      {
+                          _config.SearchWeb = val; _config.Save();
+                      }));
                       sp.Children.Add(CreateToggle("Run Automatically on Windows Startup", IsStartupEnabled(), val =>
                       {
                           SetStartup(val);
                       }));
 
-                      panelBorder.Child = sp;
+                      scroll.Content = sp;
+                      panelBorder.Child = scroll;
                       return panelBorder;
+                  }
+
+                  private TextBlock CreateSectionHeader(string text)
+                  {
+                      return new TextBlock
+                      {
+                          Text = text,
+                          FontSize = 11,
+                          FontWeight = FontWeights.Bold,
+                          Foreground = new SolidColorBrush(Color.FromRgb(120, 175, 255)),
+                          Margin = new Thickness(0, 8, 0, 6)
+                      };
+                  }
+
+                  private UIElement CreateSliderRow(string label, double min, double max, double current, Action<double> onChanged)
+                  {
+                      var g = new Grid { Margin = new Thickness(0, 3, 0, 3) };
+                      g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(175) });
+                      g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                      g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(45) });
+
+                      var tb = new TextBlock
+                      {
+                          Text = label,
+                          Foreground = new SolidColorBrush(Color.FromRgb(215, 220, 230)),
+                          FontSize = 12,
+                          VerticalAlignment = VerticalAlignment.Center
+                      };
+                      Grid.SetColumn(tb, 0);
+
+                      var valText = new TextBlock
+                      {
+                          Text = Math.Round(current).ToString(),
+                          Foreground = Brushes.White,
+                          FontSize = 12,
+                          HorizontalAlignment = HorizontalAlignment.Right,
+                          VerticalAlignment = VerticalAlignment.Center
+                      };
+                      Grid.SetColumn(valText, 2);
+
+                      var slider = new Slider
+                      {
+                          Minimum = min,
+                          Maximum = max,
+                          Value = current,
+                          VerticalAlignment = VerticalAlignment.Center,
+                          Cursor = Cursors.Hand
+                      };
+                      slider.ValueChanged += (s, e) =>
+                      {
+                          valText.Text = Math.Round(slider.Value).ToString();
+                          onChanged(slider.Value);
+                      };
+                      Grid.SetColumn(slider, 1);
+
+                      g.Children.Add(tb);
+                      g.Children.Add(slider);
+                      g.Children.Add(valText);
+                      return g;
                   }
 
                   private CheckBox CreateToggle(string label, bool initial, Action<bool> onChanged)
@@ -377,10 +875,10 @@ jobs:
                           {
                               Text = label,
                               Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 230)),
-                              FontSize = 13
+                              FontSize = 12.5
                           },
                           IsChecked = initial,
-                          Margin = new Thickness(0, 4, 0, 4),
+                          Margin = new Thickness(0, 3, 0, 3),
                           Cursor = Cursors.Hand
                       };
                       cb.Checked += (s, e) => onChanged(true);
@@ -388,9 +886,58 @@ jobs:
                       return cb;
                   }
 
+                  private void ApplyThemeAndGeometry()
+                  {
+                      int t = Math.Max(0, Math.Min(_themes.Length - 1, _config.ThemeIndex));
+                      byte[] p = _themes[t];
+                      byte bgAlpha = _config.EnableAcrylic ? (byte)205 : (byte)248;
+
+                      _mainBorder.Background = new SolidColorBrush(Color.FromArgb(bgAlpha, p[0], p[1], p[2]));
+                      _mainBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(p[6], p[3], p[4], p[5]));
+                      _mainBorder.CornerRadius = new CornerRadius(_config.CornerRadiusVal);
+
+                      var accentBrush = new SolidColorBrush(Color.FromRgb(p[3], p[4], p[5]));
+                      _searchIcon.Foreground = accentBrush;
+                      _searchBox.CaretBrush = accentBrush;
+
+                      Width = _config.WindowWidth;
+                      Left = (SystemParameters.PrimaryScreenWidth - Width) * (_config.PosXPercent / 100.0);
+                      Top = (SystemParameters.PrimaryScreenHeight - 120) * (_config.PosYPercent / 100.0);
+                  }
+
+                  private ImageSource GetRealFileIcon(string path)
+                  {
+                      if (string.IsNullOrEmpty(path)) return null;
+                      ImageSource cached;
+                      if (_iconCache.TryGetValue(path, out cached)) return cached;
+                      try
+                      {
+                          if (File.Exists(path))
+                          {
+                              using (var sysIcon = System.Drawing.Icon.ExtractAssociatedIcon(path))
+                              {
+                                  if (sysIcon != null)
+                                  {
+                                      var img = Imaging.CreateBitmapSourceFromHIcon(
+                                          sysIcon.Handle,
+                                          Int32Rect.Empty,
+                                          BitmapSizeOptions.FromWidthAndHeight(32, 32));
+                                      img.Freeze();
+                                      if (_iconCache.Count > 120) _iconCache.Clear();
+                                      _iconCache[path] = img;
+                                      return img;
+                                  }
+                              }
+                          }
+                      }
+                      catch { }
+                      return null;
+                  }
+
                   private void RefreshCaches()
                   {
                       _appCache.Clear();
+                      _iconCache.Clear();
                       if (_config.SearchApps)
                       {
                           var dirs = new[]
@@ -415,7 +962,7 @@ jobs:
                                           _appCache.Add(new SearchItem
                                           {
                                               Title = name,
-                                              Subtitle = "Application",
+                                              Subtitle = "Application • Ctrl+Shift+Enter for Admin",
                                               TargetPath = file,
                                               Category = "APP"
                                           });
@@ -462,11 +1009,19 @@ jobs:
                       {
                           _sysCache = new List<SearchItem>
                           {
-                              new SearchItem { Title = "Task Manager", Subtitle = "System Tool", TargetPath = "taskmgr.exe", Category = "SYS" },
-                              new SearchItem { Title = "Control Panel", Subtitle = "System Tool", TargetPath = "control.exe", Category = "SYS" },
-                              new SearchItem { Title = "Windows Settings", Subtitle = "System Tool", TargetPath = "ms-settings:", Category = "SYS" },
-                              new SearchItem { Title = "Command Prompt", Subtitle = "System Tool", TargetPath = "cmd.exe", Category = "SYS" },
-                              new SearchItem { Title = "Lock PC", Subtitle = "Power Action", TargetPath = "rundll32.exe user32.dll,LockWorkStation", Category = "SYS" }
+                              new SearchItem { Title = "Lock PC", Subtitle = "Instant Power Command", Category = "POWER", Emoji = "🔒",
+                                  CustomAction = () => Process.Start("rundll32.exe", "user32.dll,LockWorkStation") },
+                              new SearchItem { Title = "Empty Recycle Bin", Subtitle = "Clean temporary trash immediately", Category = "SYSTEM", Emoji = "🗑️",
+                                  CustomAction = () => SHEmptyRecycleBin(IntPtr.Zero, null, 7) },
+                              new SearchItem { Title = "Sleep PC", Subtitle = "Put computer into low-power sleep", Category = "POWER", Emoji = "🌙",
+                                  CustomAction = () => Forms.Application.SetSuspendState(Forms.PowerState.Suspend, false, false) },
+                              new SearchItem { Title = "Shutdown PC", Subtitle = "Power off Windows cleanly", Category = "POWER", Emoji = "⚡",
+                                  CustomAction = () => Process.Start("shutdown.exe", "/s /t 0") },
+                              new SearchItem { Title = "Restart PC", Subtitle = "Reboot Windows cleanly", Category = "POWER", Emoji = "🔄",
+                                  CustomAction = () => Process.Start("shutdown.exe", "/r /t 0") },
+                              new SearchItem { Title = "Task Manager", Subtitle = "System Resource Monitor", TargetPath = "taskmgr.exe", Category = "SYS", Emoji = "📊" },
+                              new SearchItem { Title = "Control Panel", Subtitle = "Classic Windows Settings", TargetPath = "control.exe", Category = "SYS", Emoji = "🎛️" },
+                              new SearchItem { Title = "Windows Settings", Subtitle = "Modern Settings Panel", TargetPath = "ms-settings:", Category = "SYS", Emoji = "⚙️" }
                           };
                       }
                       else
@@ -479,6 +1034,9 @@ jobs:
 
                   private void OnSearchTextChanged(object sender, TextChangedEventArgs e)
                   {
+                      _placeholderText.Visibility = string.IsNullOrEmpty(_searchBox.Text)
+                          ? Visibility.Visible
+                          : Visibility.Collapsed;
                       UpdateResults(_searchBox.Text);
                   }
 
@@ -486,44 +1044,192 @@ jobs:
                   {
                       _resultsList.Items.Clear();
                       string q = (rawQuery ?? "").Trim();
+
                       if (string.IsNullOrEmpty(q))
                       {
                           _resultsList.Visibility = Visibility.Collapsed;
+                          _notesBoard.Visibility = Visibility.Collapsed;
                           return;
                       }
 
-                      var matches = new List<SearchItem>();
+                      // 1. Sticky Notes Mode ('notes' or 'note ...')
+                      if (_config.EnableNotes && (q.Equals("notes", StringComparison.OrdinalIgnoreCase) ||
+                          q.StartsWith("note ", StringComparison.OrdinalIgnoreCase)))
+                      {
+                          _notesBoard.Visibility = Visibility.Visible;
+                          string noteBody = q.Length > 5 ? q.Substring(5).Trim() : "";
+                          RenderNotesBoard("");
 
+                          if (!string.IsNullOrEmpty(noteBody))
+                          {
+                              var addNoteItem = new SearchItem
+                              {
+                                  Title = "Pin Sticky Note: \"" + noteBody + "\"",
+                                  Subtitle = "Press Enter to save to your Visual Scratchpad",
+                                  Category = "NOTE",
+                                  Emoji = "📌",
+                                  CustomAction = () =>
+                                  {
+                                      _notes.Insert(0, new NoteItem
+                                      {
+                                          Id = Guid.NewGuid().ToString("N"),
+                                          Text = noteBody,
+                                          Timestamp = DateTime.Now.ToString("dd MMM, hh:mm tt"),
+                                          ColorIndex = _notes.Count
+                                      });
+                                      SaveNotes();
+                                      _searchBox.Text = "notes";
+                                      _searchBox.CaretIndex = _searchBox.Text.Length;
+                                  }
+                              };
+                              _resultsList.Items.Add(CreateResultRow(addNoteItem, 0));
+                              _resultsList.SelectedIndex = 0;
+                              _resultsList.Visibility = Visibility.Visible;
+                          }
+                          else
+                          {
+                              _resultsList.Visibility = Visibility.Collapsed;
+                          }
+                          return;
+                      }
+                      else
+                      {
+                          _notesBoard.Visibility = Visibility.Collapsed;
+                      }
+
+                      var finalItems = new List<SearchItem>();
+
+                      // 2. Running Process Killer ('kill <name>')
+                      if (_config.EnableKill && (q.Equals("kill", StringComparison.OrdinalIgnoreCase) ||
+                          q.StartsWith("kill ", StringComparison.OrdinalIgnoreCase)))
+                      {
+                          string pFilter = q.Length > 4 ? q.Substring(4).Trim() : "";
+                          try
+                          {
+                              var procs = Process.GetProcesses()
+                                  .Where(p => !string.IsNullOrEmpty(p.MainWindowTitle) || p.ProcessName.IndexOf(pFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                                  .Where(p => string.IsNullOrEmpty(pFilter) ||
+                                              p.ProcessName.IndexOf(pFilter, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                              p.MainWindowTitle.IndexOf(pFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                                  .OrderByDescending(p => !string.IsNullOrEmpty(p.MainWindowTitle))
+                                  .Take(7);
+
+                              foreach (var proc in procs)
+                              {
+                                  int pid = proc.Id;
+                                  string pName = proc.ProcessName;
+                                  string wTitle = string.IsNullOrEmpty(proc.MainWindowTitle) ? "Background Process" : proc.MainWindowTitle;
+                                  finalItems.Add(new SearchItem
+                                  {
+                                      Title = "Kill " + pName + " (PID: " + pid + ")",
+                                      Subtitle = wTitle + " • Press Enter to force terminate",
+                                      Category = "KILL",
+                                      Emoji = "🛑",
+                                      CustomAction = () =>
+                                      {
+                                          try { Process.GetProcessById(pid).Kill(); } catch { }
+                                      }
+                                  });
+                              }
+                          }
+                          catch { }
+                      }
+
+                      // 3. Quick System Volume & Media Sliders ('vol 40', 'mute', 'next', 'pause')
+                      if (_config.EnableKill)
+                      {
+                          if (q.StartsWith("vol ", StringComparison.OrdinalIgnoreCase))
+                          {
+                              int targetVol;
+                              if (int.TryParse(q.Substring(4).Trim(), out targetVol))
+                              {
+                                  targetVol = Math.Max(0, Math.Min(100, targetVol));
+                                  finalItems.Add(new SearchItem
+                                  {
+                                      Title = "Set System Volume to " + targetVol + "%",
+                                      Subtitle = "Adjust master audio level immediately",
+                                      Category = "AUDIO",
+                                      Emoji = "🔊",
+                                      CustomAction = () => SetSystemVolume(targetVol)
+                                  });
+                              }
+                          }
+                          else if (q.Equals("mute", StringComparison.OrdinalIgnoreCase))
+                          {
+                              finalItems.Add(new SearchItem
+                              {
+                                  Title = "Toggle System Audio Mute",
+                                  Subtitle = "Mute or unmute master speakers",
+                                  Category = "AUDIO",
+                                  Emoji = "🔇",
+                                  CustomAction = () => keybd_event(0xAD, 0, 0, UIntPtr.Zero)
+                              });
+                          }
+                      }
+
+                      // 4. Instant Math Calculator
+                      if (_config.EnableCalc && LooksLikeMath(q))
+                      {
+                          try
+                          {
+                              string expr = q.Replace("%", "/100.0");
+                              var val = new DataTable().Compute(expr, null);
+                              if (val != null && val != DBNull.Value)
+                              {
+                                  string ans = Convert.ToDouble(val).ToString("0.######");
+                                  finalItems.Add(new SearchItem
+                                  {
+                                      Title = "= " + ans,
+                                      Subtitle = "Instant Math (" + q + ") • Press Enter to copy result",
+                                      Category = "CALC",
+                                      Emoji = "🧮",
+                                      CustomAction = () =>
+                                      {
+                                          try { Clipboard.SetText(ans); } catch { }
+                                      }
+                                  });
+                              }
+                          }
+                          catch { }
+                      }
+
+                      // 5. Apps, System & Files with Smart Most-Used Learning
+                      var matches = new List<SearchItem>();
                       if (_config.SearchApps && _appCache != null)
-                          matches.AddRange(_appCache.Where(x => x.Title.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0));
+                          matches.AddRange(_appCache.Where(x => MatchesQuery(x.Title, q)));
 
                       if (_config.SearchSystem && _sysCache != null)
-                          matches.AddRange(_sysCache.Where(x => x.Title.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0));
+                          matches.AddRange(_sysCache.Where(x => MatchesQuery(x.Title, q)));
 
                       if (_config.SearchFiles && _fileCache != null)
-                          matches.AddRange(_fileCache.Where(x => x.Title.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0));
+                          matches.AddRange(_fileCache.Where(x => MatchesQuery(x.Title, q)));
 
-                      var sorted = matches
-                          .OrderByDescending(x => x.Title.StartsWith(q, StringComparison.OrdinalIgnoreCase))
+                      var sortedMatches = matches
+                          .OrderByDescending(x => GetUsageScore(x.Title))
+                          .ThenByDescending(x => x.Title.StartsWith(q, StringComparison.OrdinalIgnoreCase))
                           .ThenBy(x => x.Title.Length)
-                          .Take(8)
+                          .Take(7)
                           .ToList();
 
+                      finalItems.AddRange(sortedMatches);
+
+                      // 6. Web Search Fallback
                       if (_config.SearchWeb)
                       {
-                          sorted.Add(new SearchItem
+                          finalItems.Add(new SearchItem
                           {
                               Title = "Search Web for \"" + q + "\"",
                               Subtitle = "Open in default browser",
                               TargetPath = "https://www.google.com/search?q=" + Uri.EscapeDataString(q),
                               Category = "WEB",
-                              IsWeb = true
+                              Emoji = "🌐"
                           });
                       }
 
-                      foreach (var item in sorted)
+                      int rowIndex = 0;
+                      foreach (var item in finalItems.Take(8))
                       {
-                          _resultsList.Items.Add(CreateResultRow(item));
+                          _resultsList.Items.Add(CreateResultRow(item, rowIndex++));
                       }
 
                       if (_resultsList.Items.Count > 0)
@@ -537,56 +1243,176 @@ jobs:
                       }
                   }
 
-                  private ListBoxItem CreateResultRow(SearchItem item)
+                  private bool MatchesQuery(string title, string query)
                   {
-                      var grid = new Grid { Margin = new Thickness(6, 4, 6, 4) };
+                      if (title.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                      // Initials / Fuzzy check (e.g. 'vsc' matches 'Visual Studio Code')
+                      var words = title.Split(new[] { ' ', '-', '_' }, StringSplitOptions.RemoveEmptyEntries);
+                      if (words.Length >= query.Length && query.Length >= 2)
+                      {
+                          string initials = new string(words.Select(w => w[0]).ToArray());
+                          if (initials.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                      }
+                      return false;
+                  }
+
+                  private bool LooksLikeMath(string s)
+                  {
+                      if (!s.Any(char.IsDigit)) return false;
+                      return s.IndexOfAny(new[] { '+', '-', '*', '/', '%', '(' }) >= 0;
+                  }
+
+                  private void SetSystemVolume(int level)
+                  {
+                      // Step down to 0 then step up to requested level (each step = 2%)
+                      for (int i = 0; i < 50; i++) keybd_event(0xAE, 0, 0, UIntPtr.Zero);
+                      int steps = level / 2;
+                      for (int i = 0; i < steps; i++) keybd_event(0xAF, 0, 0, UIntPtr.Zero);
+                  }
+
+                  private ListBoxItem CreateResultRow(SearchItem item, int index)
+                  {
+                      var rowBorder = new Border
+                      {
+                          CornerRadius = new CornerRadius(10),
+                          Background = Brushes.Transparent,
+                          Padding = new Thickness(10, 7, 10, 7),
+                          Margin = new Thickness(0, 2, 0, 2),
+                          RenderTransform = new TranslateTransform(0, 8),
+                          Opacity = 0
+                      };
+
+                      var grid = new Grid();
+                      grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                       grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                       grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-                      var leftStack = new StackPanel();
+                      // 1. Real Icon or Emoji Badge
+                      UIElement iconElement = null;
+                      var realIcon = GetRealFileIcon(item.TargetPath);
+                      if (realIcon != null)
+                      {
+                          iconElement = new Image
+                          {
+                              Source = realIcon,
+                              Width = 28,
+                              Height = 28,
+                              Margin = new Thickness(0, 0, 12, 0),
+                              VerticalAlignment = VerticalAlignment.Center
+                          };
+                      }
+                      else
+                      {
+                          iconElement = new Border
+                          {
+                              Width = 30,
+                              Height = 30,
+                              CornerRadius = new CornerRadius(8),
+                              Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                              Margin = new Thickness(0, 0, 12, 0),
+                              VerticalAlignment = VerticalAlignment.Center,
+                              Child = new TextBlock
+                              {
+                                  Text = string.IsNullOrEmpty(item.Emoji) ? "🚀" : item.Emoji,
+                                  FontSize = 15,
+                                  HorizontalAlignment = HorizontalAlignment.Center,
+                                  VerticalAlignment = VerticalAlignment.Center
+                              }
+                          };
+                      }
+                      Grid.SetColumn(iconElement, 0);
+
+                      // 2. Title & Subtitle
+                      var leftStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                      int uses = GetUsageScore(item.Title);
+                      string titleText = uses > 0 ? item.Title + "  ★" : item.Title;
+
                       leftStack.Children.Add(new TextBlock
                       {
-                          Text = item.Title,
+                          Text = titleText,
                           Foreground = Brushes.White,
-                          FontSize = 15,
-                          FontWeight = FontWeights.Medium
+                          FontSize = 14.5,
+                          FontWeight = FontWeights.SemiBold
                       });
                       leftStack.Children.Add(new TextBlock
                       {
                           Text = item.Subtitle,
-                          Foreground = new SolidColorBrush(Color.FromRgb(145, 150, 165)),
+                          Foreground = new SolidColorBrush(Color.FromRgb(150, 155, 172)),
                           FontSize = 11
                       });
-                      Grid.SetColumn(leftStack, 0);
+                      Grid.SetColumn(leftStack, 1);
 
+                      // 3. Category Pill
+                      int t = Math.Max(0, Math.Min(_themes.Length - 1, _config.ThemeIndex));
+                      byte[] p = _themes[t];
                       var badge = new Border
                       {
                           CornerRadius = new CornerRadius(6),
-                          Background = new SolidColorBrush(Color.FromRgb(42, 46, 58)),
+                          Background = new SolidColorBrush(Color.FromArgb(38, p[3], p[4], p[5])),
                           Padding = new Thickness(8, 3, 8, 3),
                           VerticalAlignment = VerticalAlignment.Center,
                           Child = new TextBlock
                           {
                               Text = item.Category,
-                              Foreground = new SolidColorBrush(Color.FromRgb(130, 180, 255)),
+                              Foreground = new SolidColorBrush(Color.FromRgb(p[3], p[4], p[5])),
                               FontSize = 10,
                               FontWeight = FontWeights.Bold
                           }
                       };
-                      Grid.SetColumn(badge, 1);
+                      Grid.SetColumn(badge, 2);
 
+                      grid.Children.Add(iconElement);
                       grid.Children.Add(leftStack);
                       grid.Children.Add(badge);
+                      rowBorder.Child = grid;
+
+                      // Smooth staggered entrance animation for each row
+                      var delay = TimeSpan.FromMilliseconds(index * 18);
+                      var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)) { BeginTime = delay };
+                      var slide = new DoubleAnimation(8, 0, TimeSpan.FromMilliseconds(160))
+                      {
+                          BeginTime = delay,
+                          EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                      };
+                      rowBorder.BeginAnimation(OpacityProperty, fade);
+                      rowBorder.RenderTransform.BeginAnimation(TranslateTransform.YProperty, slide);
 
                       return new ListBoxItem
                       {
-                          Content = grid,
+                          Content = rowBorder,
                           Tag = item,
                           Background = Brushes.Transparent,
                           BorderThickness = new Thickness(0),
-                          Padding = new Thickness(6, 4, 6, 4),
+                          Padding = new Thickness(0),
+                          HorizontalContentAlignment = HorizontalAlignment.Stretch,
                           Cursor = Cursors.Hand
                       };
+                  }
+
+                  private void OnResultSelectionChanged(object sender, SelectionChangedEventArgs e)
+                  {
+                      int t = Math.Max(0, Math.Min(_themes.Length - 1, _config.ThemeIndex));
+                      byte[] p = _themes[t];
+
+                      foreach (var obj in _resultsList.Items)
+                      {
+                          var lbi = obj as ListBoxItem;
+                          if (lbi == null) continue;
+                          var b = lbi.Content as Border;
+                          if (b == null) continue;
+
+                          if (lbi.IsSelected)
+                          {
+                              b.Background = new SolidColorBrush(Color.FromArgb(55, p[3], p[4], p[5]));
+                              b.BorderBrush = new SolidColorBrush(Color.FromArgb(110, p[3], p[4], p[5]));
+                              b.BorderThickness = new Thickness(1);
+                          }
+                          else
+                          {
+                              b.Background = Brushes.Transparent;
+                              b.BorderThickness = new Thickness(0);
+                          }
+                      }
                   }
 
                   private void OnSearchKeyDown(object sender, KeyEventArgs e)
@@ -610,25 +1436,50 @@ jobs:
                       }
                       else if (e.Key == Key.Enter)
                       {
-                          ExecuteSelected();
+                          bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+                          bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+                          ExecuteSelected(ctrl && shift, ctrl && !shift);
                           e.Handled = true;
                       }
                   }
 
-                  private void ExecuteSelected()
+                  private void ExecuteSelected(bool runAsAdmin, bool openFolder)
                   {
-                      if (_resultsList.SelectedItem is ListBoxItem lbi && lbi.Tag is SearchItem item)
+                      var lbi = _resultsList.SelectedItem as ListBoxItem;
+                      if (lbi == null) return;
+                      var item = lbi.Tag as SearchItem;
+                      if (item == null) return;
+
+                      IncrementUsageScore(item.Title);
+
+                      if (item.CustomAction != null)
                       {
-                          HideSearch();
-                          try
-                          {
-                              if (item.TargetPath == "rundll32.exe user32.dll,LockWorkStation")
-                                  Process.Start("rundll32.exe", "user32.dll,LockWorkStation");
-                              else
-                                  Process.Start(new ProcessStartInfo(item.TargetPath) { UseShellExecute = true });
-                          }
-                          catch { }
+                          item.CustomAction.Invoke();
+                          if (item.Category != "NOTE") HideSearch();
+                          return;
                       }
+
+                      HideSearch();
+                      try
+                      {
+                          if (openFolder && File.Exists(item.TargetPath))
+                          {
+                              Process.Start("explorer.exe", "/select,\"" + item.TargetPath + "\"");
+                          }
+                          else if (runAsAdmin)
+                          {
+                              Process.Start(new ProcessStartInfo(item.TargetPath)
+                              {
+                                  UseShellExecute = true,
+                                  Verb = "runas"
+                              });
+                          }
+                          else
+                          {
+                              Process.Start(new ProcessStartInfo(item.TargetPath) { UseShellExecute = true });
+                          }
+                      }
+                      catch { }
                   }
 
                   public void ToggleSearch()
@@ -641,24 +1492,70 @@ jobs:
 
                   public void ShowSearch()
                   {
-                      Left = (SystemParameters.PrimaryScreenWidth - Width) / 2;
-                      Top = SystemParameters.PrimaryScreenHeight * 0.22;
+                      _isShowing = true;
+                      ApplyThemeAndGeometry();
                       _searchBox.Clear();
                       _resultsList.Visibility = Visibility.Collapsed;
+                      _notesBoard.Visibility = Visibility.Collapsed;
                       _settingsPanel.Visibility = Visibility.Collapsed;
 
                       Show();
+
+                      // Force Windows 10 Foreground Focus so typing works immediately without clicking
+                      try
+                      {
+                          IntPtr fgWindow = GetForegroundWindow();
+                          IntPtr myHwnd = new WindowInteropHelper(this).Handle;
+                          uint fgThread = GetWindowThreadProcessId(fgWindow, IntPtr.Zero);
+                          uint myThread = GetCurrentThreadId();
+
+                          if (fgThread != myThread && fgThread != 0)
+                          {
+                              AttachThreadInput(myThread, fgThread, true);
+                              SetForegroundWindow(myHwnd);
+                              BringWindowToTop(myHwnd);
+                              AttachThreadInput(myThread, fgThread, false);
+                          }
+                          else
+                          {
+                              SetForegroundWindow(myHwnd);
+                          }
+                      }
+                      catch { }
+
                       Activate();
+                      Focusable = true;
+                      _searchBox.Focusable = true;
                       _searchBox.Focus();
+                      Keyboard.Focus(_searchBox);
+
+                      // Extra Dispatcher tick to guarantee keyboard capture after Alt+Space release
+                      Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+                      {
+                          Activate();
+                          _searchBox.Focus();
+                          Keyboard.Focus(_searchBox);
+                          _isShowing = false;
+                      }));
 
                       var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150));
-                      var slide = new DoubleAnimation(-14, 0, TimeSpan.FromMilliseconds(160))
+                      var slide = new DoubleAnimation(-16, 0, TimeSpan.FromMilliseconds(180))
+                      {
+                          EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                      };
+                      var scaleX = new DoubleAnimation(0.96, 1.0, TimeSpan.FromMilliseconds(180))
+                      {
+                          EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                      };
+                      var scaleY = new DoubleAnimation(0.96, 1.0, TimeSpan.FromMilliseconds(180))
                       {
                           EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
                       };
 
                       BeginAnimation(OpacityProperty, fade);
                       _slideTransform.BeginAnimation(TranslateTransform.YProperty, slide);
+                      _scaleTransform.BeginAnimation(ScaleTransform.ScaleXProperty, scaleX);
+                      _scaleTransform.BeginAnimation(ScaleTransform.ScaleYProperty, scaleY);
                   }
 
                   public void HideSearch()
@@ -669,40 +1566,92 @@ jobs:
                       TrimMemory();
                   }
 
-                  private void InstallKeyboardHook()
-                  {
-                      _hookProc = HookCallback;
-                      using (Process curProcess = Process.GetCurrentProcess())
-                      using (ProcessModule curModule = curProcess.MainModule)
-                      {
-                          _hookId = SetWindowsHookEx(13, _hookProc, GetModuleHandle(curModule.ModuleName), 0);
-                      }
-                  }
+                  // Smart Most-Used Persistence
+                  private string UsageFilePath => Path.Combine(AppConfig.FolderPath, "usage.dat");
 
-                  private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+                  private void LoadUsageData()
                   {
-                      if (nCode >= 0 && (wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104))
+                      try
                       {
-                          int vkCode = Marshal.ReadInt32(lParam);
-                          if (vkCode == 0x53)
+                          if (File.Exists(UsageFilePath))
                           {
-                              bool winDown = (GetAsyncKeyState(0x5B) & 0x8000) != 0 ||
-                                             (GetAsyncKeyState(0x5C) & 0x8000) != 0;
-                              if (winDown)
+                              foreach (var line in File.ReadAllLines(UsageFilePath))
                               {
-                                  Dispatcher.BeginInvoke(new Action(ToggleSearch));
-                                  return (IntPtr)1;
+                                  var parts = line.Split('|');
+                                  int count;
+                                  if (parts.Length == 2 && int.TryParse(parts[1], out count))
+                                      _usageCounts[parts[0]] = count;
                               }
                           }
                       }
-                      return CallNextHookEx(_hookId, nCode, wParam, lParam);
+                      catch { }
+                  }
+
+                  private int GetUsageScore(string title)
+                  {
+                      int c;
+                      return _usageCounts.TryGetValue(title, out c) ? c : 0;
+                  }
+
+                  private void IncrementUsageScore(string title)
+                  {
+                      if (string.IsNullOrEmpty(title)) return;
+                      _usageCounts[title] = GetUsageScore(title) + 1;
+                      try
+                      {
+                          Directory.CreateDirectory(AppConfig.FolderPath);
+                          File.WriteAllLines(UsageFilePath, _usageCounts.Select(kv => kv.Key + "|" + kv.Value));
+                      }
+                      catch { }
+                  }
+
+                  // Sticky Notes Persistence
+                  private string NotesFilePath => Path.Combine(AppConfig.FolderPath, "notes.dat");
+
+                  private void LoadNotes()
+                  {
+                      _notes.Clear();
+                      try
+                      {
+                          if (File.Exists(NotesFilePath))
+                          {
+                              foreach (var line in File.ReadAllLines(NotesFilePath))
+                              {
+                                  var parts = line.Split(new[] { "|||" }, StringSplitOptions.None);
+                                  if (parts.Length >= 4)
+                                  {
+                                      int ci;
+                                      int.TryParse(parts[3], out ci);
+                                      _notes.Add(new NoteItem
+                                      {
+                                          Id = parts[0],
+                                          Text = parts[1],
+                                          Timestamp = parts[2],
+                                          ColorIndex = ci
+                                      });
+                                  }
+                              }
+                          }
+                      }
+                      catch { }
+                  }
+
+                  private void SaveNotes()
+                  {
+                      try
+                      {
+                          Directory.CreateDirectory(AppConfig.FolderPath);
+                          File.WriteAllLines(NotesFilePath, _notes.Select(n =>
+                              n.Id + "|||" + n.Text.Replace("\r", " ").Replace("\n", " ") + "|||" + n.Timestamp + "|||" + n.ColorIndex));
+                      }
+                      catch { }
                   }
 
                   private void SetupTrayIcon()
                   {
                       _trayIcon = new Forms.NotifyIcon
                       {
-                          Text = "ModernSearch (Win + S)",
+                          Text = "ModernSearch (Alt + Space)",
                           Visible = true
                       };
 
@@ -720,13 +1669,14 @@ jobs:
                       }
 
                       var menu = new Forms.ContextMenuStrip();
-                      menu.Items.Add("Open Search (Win + S)", null, (s, e) => Dispatcher.Invoke(ShowSearch));
+                      menu.Items.Add("Open Search (Alt + Space)", null, (s, e) => Dispatcher.Invoke(ShowSearch));
                       menu.Items.Add("Refresh App Index", null, (s, e) => Dispatcher.Invoke(RefreshCaches));
                       menu.Items.Add(new Forms.ToolStripSeparator());
                       menu.Items.Add("Exit", null, (s, e) =>
                       {
                           _trayIcon.Visible = false;
-                          if (_hookId != IntPtr.Zero) UnhookWindowsHookEx(_hookId);
+                          var hwnd = new WindowInteropHelper(this).Handle;
+                          if (hwnd != IntPtr.Zero) UnregisterHotKey(hwnd, HOTKEY_ID);
                           Application.Current.Shutdown();
                       });
 
