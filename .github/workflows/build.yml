@@ -99,6 +99,7 @@ jobs:
           using System.Web.Script.Serialization;
           using System.Windows;
           using System.Windows.Controls;
+          using System.Windows.Documents;
           using System.Windows.Input;
           using System.Windows.Interop;
           using System.Windows.Media;
@@ -347,6 +348,7 @@ jobs:
                   private TextBox _aiModelBox;
                   private PasswordBox _aiKeyBox;
                   private TextBlock _aiKeyStatusText;
+                  private TabControl _settingsTabs;
                   private Border _settingsPanel;
                   private TranslateTransform _slideTransform;
                   private ScaleTransform _scaleTransform;
@@ -667,6 +669,726 @@ jobs:
                       return board;
                   }
 
+                  private Border BuildFavoritesBoard()
+                  {
+                      var board = new Border
+                      {
+                          Background = Brushes.Transparent,
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(55, 140, 150, 170)),
+                          BorderThickness = new Thickness(0, 1, 0, 0),
+                          Padding = new Thickness(16, 13, 16, 14),
+                          Visibility = Visibility.Collapsed,
+                          MaxHeight = 390
+                      };
+                      var root = new StackPanel();
+                      root.Children.Add(new TextBlock
+                      {
+                          Text = "★  YOUR FAVORITES", FontSize = 12, FontWeight = FontWeights.Bold,
+                          Foreground = _primaryTextBrush, Margin = new Thickness(0, 0, 0, 2)
+                      });
+                      root.Children.Add(new TextBlock
+                      {
+                          Text = "Pinned websites, apps, files and folders • type 'fav name' to filter",
+                          FontSize = 11, Foreground = _secondaryTextBrush, TextWrapping = TextWrapping.Wrap,
+                          Margin = new Thickness(0, 0, 0, 10)
+                      });
+                      var scroll = new ScrollViewer { MaxHeight = 310, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+                      _favoritesContainer = new StackPanel();
+                      scroll.Content = _favoritesContainer;
+                      root.Children.Add(scroll);
+                      board.Child = root;
+                      return board;
+                  }
+
+                  private Border BuildAiBoard()
+                  {
+                      var board = new Border
+                      {
+                          Background = Brushes.Transparent,
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(55, 140, 150, 170)),
+                          BorderThickness = new Thickness(0, 1, 0, 0),
+                          Padding = new Thickness(16, 13, 16, 14),
+                          Visibility = Visibility.Collapsed,
+                          MaxHeight = 470
+                      };
+                      var root = new StackPanel();
+                      var header = new Grid { Margin = new Thickness(0, 0, 0, 9) };
+                      header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                      header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                      var headerStack = new StackPanel();
+                      headerStack.Children.Add(new TextBlock
+                      {
+                          Text = "✦  AI ANSWER", FontSize = 12, FontWeight = FontWeights.Bold,
+                          Foreground = _primaryTextBrush
+                      });
+                      _aiStatusText = new TextBlock
+                      {
+                          Text = "Ready", FontSize = 10.5, Foreground = _secondaryTextBrush,
+                          Margin = new Thickness(0, 2, 0, 0)
+                      };
+                      headerStack.Children.Add(_aiStatusText);
+                      Grid.SetColumn(headerStack, 0);
+                      header.Children.Add(headerStack);
+                      var copyButton = new Button
+                      {
+                          Content = "Copy", FontSize = 11, Padding = new Thickness(10, 5, 10, 5),
+                          BorderThickness = new Thickness(1),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(85, 140, 150, 170)),
+                          Background = Brushes.Transparent, Foreground = _primaryTextBrush,
+                          Cursor = Cursors.Hand, VerticalAlignment = VerticalAlignment.Center
+                      };
+                      copyButton.Click += (s, e) =>
+                      {
+                          try { if (!string.IsNullOrEmpty(_lastAiResponse)) Clipboard.SetText(_lastAiResponse); } catch { }
+                      };
+                      Grid.SetColumn(copyButton, 1);
+                      header.Children.Add(copyButton);
+                      root.Children.Add(header);
+                      var scroll = new ScrollViewer { MaxHeight = 380, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+                      _aiContent = new StackPanel { Margin = new Thickness(0, 2, 0, 0) };
+                      scroll.Content = _aiContent;
+                      root.Children.Add(scroll);
+                      board.Child = root;
+                      return board;
+                  }
+
+                  private void RenderFavoritesBoard(string filterText)
+                  {
+                      if (_favoritesContainer == null) return;
+                      _favoritesContainer.Children.Clear();
+                      string query = (filterText ?? "").Trim();
+                      var matches = _favorites.Where(f =>
+                          string.IsNullOrEmpty(query) ||
+                          (f.Title ?? "").IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                          (f.TargetPath ?? "").IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0).Take(40).ToList();
+
+                      if (matches.Count == 0)
+                      {
+                          _favoritesContainer.Children.Add(new Border
+                          {
+                              CornerRadius = new CornerRadius(10), Padding = new Thickness(15),
+                              Background = new SolidColorBrush(Color.FromArgb(22, 130, 140, 160)),
+                              Child = new TextBlock
+                              {
+                                  Text = string.IsNullOrWhiteSpace(query)
+                                      ? "No favorites yet. Star a website, app, file or folder result to pin it here."
+                                      : "No favorites match '" + query + "'.",
+                                  Foreground = _secondaryTextBrush, TextWrapping = TextWrapping.Wrap, FontSize = 12
+                              }
+                          });
+                          return;
+                      }
+
+                      foreach (var favorite in matches)
+                      {
+                          var card = new Border
+                          {
+                              CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1),
+                              BorderBrush = new SolidColorBrush(Color.FromArgb(45, 140, 150, 170)),
+                              Background = new SolidColorBrush(Color.FromArgb(18, 120, 130, 150)),
+                              Padding = new Thickness(11, 9, 11, 9), Margin = new Thickness(0, 0, 0, 7)
+                          };
+                          var grid = new Grid();
+                          grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                          grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                          grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                          var textStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                          textStack.Children.Add(new TextBlock
+                          {
+                              Text = (string.IsNullOrWhiteSpace(favorite.Emoji) ? "★" : favorite.Emoji) + "  " + favorite.Title,
+                              FontSize = 12.5, FontWeight = FontWeights.SemiBold, Foreground = _primaryTextBrush,
+                              TextTrimming = TextTrimming.CharacterEllipsis
+                          });
+                          textStack.Children.Add(new TextBlock
+                          {
+                              Text = favorite.TargetPath, FontSize = 10.5, Foreground = _secondaryTextBrush,
+                              TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 2, 0, 0)
+                          });
+                          Grid.SetColumn(textStack, 0);
+                          grid.Children.Add(textStack);
+                          var openButton = CreateActionButton("Open", true);
+                          openButton.Margin = new Thickness(8, 0, 0, 0);
+                          openButton.VerticalAlignment = VerticalAlignment.Center;
+                          openButton.Click += (s, e) => LaunchTarget(favorite.TargetPath, false, false, true);
+                          Grid.SetColumn(openButton, 1);
+                          grid.Children.Add(openButton);
+                          var removeButton = new Button
+                          {
+                              Content = "★", FontSize = 16,
+                              Foreground = new SolidColorBrush(Color.FromRgb(240, 180, 65)),
+                              Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+                              Padding = new Thickness(8, 0, 4, 0), ToolTip = "Unpin favorite",
+                              Cursor = Cursors.Hand, VerticalAlignment = VerticalAlignment.Center
+                          };
+                          string favoriteTarget = favorite.TargetPath;
+                          removeButton.Click += (s, e) =>
+                          {
+                              _favorites.RemoveAll(x => string.Equals(x.TargetPath, favoriteTarget, StringComparison.OrdinalIgnoreCase));
+                              SaveFavorites();
+                              RenderFavoritesBoard(filterText);
+                              UpdateShortcutList();
+                          };
+                          Grid.SetColumn(removeButton, 2);
+                          grid.Children.Add(removeButton);
+                          card.Child = grid;
+                          _favoritesContainer.Children.Add(card);
+                      }
+                  }
+
+                  private void StartAiQuery(string prompt)
+                  {
+                      if (_aiBoard == null) return;
+                      _settingsPanel.Visibility = Visibility.Collapsed;
+                      _notesBoard.Visibility = Visibility.Collapsed;
+                      _favoritesBoard.Visibility = Visibility.Collapsed;
+                      _resultsList.Visibility = Visibility.Collapsed;
+                      _aiBoard.Visibility = Visibility.Visible;
+                      _aiContent.Children.Clear();
+                      _aiBoard.Opacity = 0;
+                      _aiBoard.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
+                      _aiStatusText.Text = "Connecting to " + (string.IsNullOrWhiteSpace(_config.AiModel) ? "Gemini" : _config.AiModel) + "…";
+
+                      var loadingPanel = new Border
+                      {
+                          CornerRadius = new CornerRadius(12), Padding = new Thickness(16),
+                          Background = new SolidColorBrush(Color.FromArgb(20, 120, 130, 150))
+                      };
+                      var loadingStack = new StackPanel();
+                      loadingStack.Children.Add(new TextBlock
+                      {
+                          Text = "Preparing your answer", FontSize = 13, FontWeight = FontWeights.SemiBold,
+                          Foreground = _primaryTextBrush
+                      });
+                      loadingStack.Children.Add(new TextBlock
+                      {
+                          Text = "This request runs only because you asked for it.",
+                          FontSize = 11, Foreground = _secondaryTextBrush, Margin = new Thickness(0, 4, 0, 10)
+                      });
+                      loadingStack.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 3, Minimum = 0, Maximum = 100 });
+                      loadingPanel.Child = loadingStack;
+                      _aiContent.Children.Add(loadingPanel);
+
+                      Task.Run(async () =>
+                      {
+                          string answer;
+                          try { answer = await AskGeminiAsync(prompt).ConfigureAwait(false); }
+                          catch (Exception ex) { answer = "AI request failed: " + ex.Message; }
+                          Dispatcher.BeginInvoke(new Action(() =>
+                          {
+                              _lastAiResponse = answer ?? "No response was returned.";
+                              _aiStatusText.Text = "ANSWER  •  " + (string.IsNullOrWhiteSpace(_config.AiModel) ? "Gemini" : _config.AiModel);
+                              _aiContent.Children.Clear();
+                              RenderAiMarkdown(_lastAiResponse);
+                          }));
+                      });
+                  }
+
+                  private async Task<string> AskGeminiAsync(string prompt)
+                  {
+                      string apiKey = LoadAiApiKey();
+                      if (string.IsNullOrWhiteSpace(apiKey))
+                          return "No API key is saved. Open Settings → AI, paste your Google Gemini API key, save it, and enable AI answers.";
+
+                      string model = string.IsNullOrWhiteSpace(_config.AiModel) ? "gemini-3.5-flash-lite" : _config.AiModel.Trim();
+                      if (model.StartsWith("models/", StringComparison.OrdinalIgnoreCase))
+                          model = model.Substring("models/".Length);
+                      string url = "https://generativelanguage.googleapis.com/v1beta/models/" + Uri.EscapeDataString(model) + ":generateContent";
+
+                      var thinkingConfig = new Dictionary<string, object>();
+                      if (model.StartsWith("gemini-2.5", StringComparison.OrdinalIgnoreCase))
+                          thinkingConfig["thinkingBudget"] = 0;
+                      else
+                          thinkingConfig["thinkingLevel"] = "minimal";
+
+                      var generationConfig = new Dictionary<string, object>
+                      {
+                          { "temperature", 0.35 },
+                          { "maxOutputTokens", 2048 },
+                          { "thinkingConfig", thinkingConfig }
+                      };
+                      var requestBody = new Dictionary<string, object>
+                      {
+                          { "contents", new object[]
+                              {
+                                  new Dictionary<string, object>
+                                  {
+                                      { "role", "user" },
+                                      { "parts", new object[]
+                                          {
+                                              new Dictionary<string, object>
+                                              {
+                                                  { "text", "Answer helpfully and clearly. Prefer concise explanations with Markdown headings, short lists, and code blocks when useful.\n\nUser question: " + prompt }
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
+                          },
+                          { "generationConfig", generationConfig }
+                      };
+
+                      string json = new JavaScriptSerializer().Serialize(requestBody);
+                      using (var request = new HttpRequestMessage(HttpMethod.Post, url))
+                      {
+                          request.Headers.Add("x-goog-api-key", apiKey);
+                          request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                          using (HttpResponseMessage response = await _httpClient.SendAsync(request).ConfigureAwait(false))
+                          {
+                              string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                              var serializer = new JavaScriptSerializer();
+                              if (!response.IsSuccessStatusCode)
+                              {
+                                  string message = "Gemini returned " + (int)response.StatusCode + " (" + response.ReasonPhrase + ").";
+                                  try
+                                  {
+                                      var errorRoot = serializer.DeserializeObject(body) as Dictionary<string, object>;
+                                      var errorObject = errorRoot != null && errorRoot.ContainsKey("error")
+                                          ? errorRoot["error"] as Dictionary<string, object> : null;
+                                      if (errorObject != null && errorObject.ContainsKey("message"))
+                                          message += " " + Convert.ToString(errorObject["message"]);
+                                  }
+                                  catch { }
+                                  return message;
+                              }
+
+                              var root = serializer.DeserializeObject(body) as Dictionary<string, object>;
+                              var candidates = root != null && root.ContainsKey("candidates")
+                                  ? root["candidates"] as System.Collections.IList : null;
+                              if (candidates != null && candidates.Count > 0)
+                              {
+                                  var candidate = candidates[0] as Dictionary<string, object>;
+                                  var candidateContent = candidate != null && candidate.ContainsKey("content")
+                                      ? candidate["content"] as Dictionary<string, object> : null;
+                                  var parts = candidateContent != null && candidateContent.ContainsKey("parts")
+                                      ? candidateContent["parts"] as System.Collections.IList : null;
+                                  if (parts != null)
+                                  {
+                                      var answer = new StringBuilder();
+                                      foreach (object partObject in parts)
+                                      {
+                                          var part = partObject as Dictionary<string, object>;
+                                          if (part != null && part.ContainsKey("text")) answer.Append(Convert.ToString(part["text"]));
+                                      }
+                                      if (answer.Length > 0) return answer.ToString();
+                                  }
+                              }
+                              return "Gemini returned no text answer. Try a different model name or a simpler prompt.";
+                          }
+                      }
+                  }
+
+                  private void RenderAiMarkdown(string markdown)
+                  {
+                      if (_aiContent == null) return;
+                      _aiContent.Children.Clear();
+                      string fence = new string((char)96, 3);
+                      bool inCode = false;
+                      var code = new StringBuilder();
+                      Action flushCode = () =>
+                      {
+                          var codeBorder = new Border
+                          {
+                              CornerRadius = new CornerRadius(9),
+                              Background = _isLightTheme ? new SolidColorBrush(Color.FromRgb(237, 240, 245)) : new SolidColorBrush(Color.FromRgb(31, 34, 42)),
+                              BorderBrush = new SolidColorBrush(Color.FromArgb(45, 135, 145, 165)),
+                              BorderThickness = new Thickness(1), Padding = new Thickness(12), Margin = new Thickness(0, 4, 0, 8)
+                          };
+                          codeBorder.Child = new TextBlock
+                          {
+                              Text = code.ToString().TrimEnd(), FontFamily = new FontFamily("Consolas"),
+                              FontSize = 11.5, Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap
+                          };
+                          _aiContent.Children.Add(codeBorder);
+                          code.Clear();
+                      };
+
+                      string[] lines = (markdown ?? "").Replace("\r", "").Split('\n');
+                      foreach (string rawLine in lines.Take(240))
+                      {
+                          string line = rawLine.TrimEnd();
+                          if (line.TrimStart().StartsWith(fence, StringComparison.Ordinal))
+                          {
+                              if (inCode) flushCode();
+                              inCode = !inCode;
+                              continue;
+                          }
+                          if (inCode) { code.AppendLine(line); continue; }
+                          if (string.IsNullOrWhiteSpace(line))
+                          {
+                              _aiContent.Children.Add(new Border { Height = 4 });
+                              continue;
+                          }
+
+                          string clean = line.TrimStart();
+                          int headingLevel = 0;
+                          while (headingLevel < clean.Length && headingLevel < 3 && clean[headingLevel] == '#') headingLevel++;
+                          if (headingLevel > 0 && clean.Length > headingLevel && clean[headingLevel] == ' ')
+                              clean = clean.Substring(headingLevel + 1);
+                          bool bullet = clean.StartsWith("- ") || clean.StartsWith("* ") || clean.StartsWith("• ");
+                          bool numbered = clean.Length > 2 && char.IsDigit(clean[0]) && clean.IndexOf(". ", StringComparison.Ordinal) == 1;
+                          if (bullet || numbered) clean = clean.Substring(bullet ? 2 : 3);
+
+                          var lineBlock = new TextBlock
+                          {
+                              FontSize = headingLevel == 1 ? 18 : (headingLevel == 2 ? 15 : (headingLevel == 3 ? 13.5 : 12.5)),
+                              FontWeight = headingLevel > 0 || bullet || numbered ? FontWeights.SemiBold : FontWeights.Normal,
+                              Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap,
+                              Margin = new Thickness(0, headingLevel > 0 ? 7 : 2, 0, headingLevel > 0 ? 3 : 2),
+                              LineHeight = headingLevel > 0 ? 25 : 20
+                          };
+                          if (bullet) lineBlock.Inlines.Add(new Run("•  "));
+                          else if (numbered)
+                          {
+                              string raw = rawLine.TrimStart();
+                              lineBlock.Inlines.Add(new Run(raw.Substring(0, raw.IndexOf(". ", StringComparison.Ordinal) + 2) + " "));
+                          }
+                          AddMarkdownInlines(lineBlock, clean);
+                          _aiContent.Children.Add(lineBlock);
+                      }
+                      if (inCode) flushCode();
+                  }
+
+                  private void AddMarkdownInlines(TextBlock block, string text)
+                  {
+                      int i = 0;
+                      while (i < text.Length)
+                      {
+                          int nextBold = text.IndexOf("**", i, StringComparison.Ordinal);
+                          if (nextBold < 0) { block.Inlines.Add(new Run(text.Substring(i))); break; }
+                          if (nextBold > i) block.Inlines.Add(new Run(text.Substring(i, nextBold - i)));
+                          int endBold = text.IndexOf("**", nextBold + 2, StringComparison.Ordinal);
+                          if (endBold < 0) { block.Inlines.Add(new Run(text.Substring(nextBold))); break; }
+                          block.Inlines.Add(new Run(text.Substring(nextBold + 2, endBold - nextBold - 2)) { FontWeight = FontWeights.Bold });
+                          i = endBold + 2;
+                      }
+                  }
+
+                  private void AddOrUpdateShortcut()
+                  {
+                      string name = (_aliasNameBox == null ? "" : _aliasNameBox.Text).Trim();
+                      string target = (_aliasTargetBox == null ? "" : _aliasTargetBox.Text).Trim();
+                      if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(target))
+                      {
+                          MessageBox.Show("Enter both a shortcut name and its website or app path.", "Shortcut needs two values", MessageBoxButton.OK, MessageBoxImage.Information);
+                          return;
+                      }
+                      if (name.Any(char.IsWhiteSpace))
+                      {
+                          MessageBox.Show("Use one command word, such as gem or work.", "Use one command word", MessageBoxButton.OK, MessageBoxImage.Information);
+                          return;
+                      }
+                      _shortcuts.RemoveAll(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
+                      _shortcuts.Insert(0, new ShortcutAlias { Name = name, Target = target });
+                      SaveShortcuts();
+                      _aliasNameBox.Clear();
+                      _aliasTargetBox.Clear();
+                      UpdateShortcutList();
+                  }
+
+                  private void UpdateShortcutList()
+                  {
+                      if (_shortcutList == null) return;
+                      _shortcutList.Children.Clear();
+                      if (_shortcuts.Count == 0)
+                      {
+                          _shortcutList.Children.Add(CreateSettingsInfo("No custom commands yet. Add one above."));
+                          return;
+                      }
+                      foreach (var alias in _shortcuts.Take(30).ToList())
+                      {
+                          var row = new Grid { Margin = new Thickness(0, 3, 0, 3) };
+                          row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(85) });
+                          row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                          row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                          var name = new TextBlock
+                          {
+                              Text = alias.Name, FontSize = 11.5, FontWeight = FontWeights.Bold,
+                              Foreground = _primaryTextBrush, VerticalAlignment = VerticalAlignment.Center
+                          };
+                          Grid.SetColumn(name, 0);
+                          row.Children.Add(name);
+                          var target = new TextBlock
+                          {
+                              Text = alias.Target, FontSize = 10.5, Foreground = _secondaryTextBrush,
+                              TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center
+                          };
+                          Grid.SetColumn(target, 1);
+                          row.Children.Add(target);
+                          string aliasName = alias.Name;
+                          var remove = new Button
+                          {
+                              Content = "Remove", FontSize = 10.5, Foreground = _primaryTextBrush,
+                              Background = Brushes.Transparent, BorderThickness = new Thickness(1),
+                              BorderBrush = new SolidColorBrush(Color.FromArgb(70, 145, 155, 175)),
+                              Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(6, 0, 0, 0), Cursor = Cursors.Hand
+                          };
+                          remove.Click += (s, e) =>
+                          {
+                              _shortcuts.RemoveAll(x => string.Equals(x.Name, aliasName, StringComparison.OrdinalIgnoreCase));
+                              SaveShortcuts();
+                              UpdateShortcutList();
+                          };
+                          Grid.SetColumn(remove, 2);
+                          row.Children.Add(remove);
+                          _shortcutList.Children.Add(row);
+                      }
+                  }
+
+                  private void ChooseSearchFolder()
+                  {
+                      using (var dialog = new Forms.FolderBrowserDialog())
+                      {
+                          dialog.Description = "Choose the folder to search when you type 'folder ...'.";
+                          dialog.ShowNewFolderButton = false;
+                          if (Directory.Exists(_config.SearchFolderPath)) dialog.SelectedPath = _config.SearchFolderPath;
+                          if (dialog.ShowDialog() == Forms.DialogResult.OK && Directory.Exists(dialog.SelectedPath))
+                          {
+                              _config.SearchFolderPath = dialog.SelectedPath;
+                              _config.Save();
+                              _folderCache = null;
+                              _folderCachePath = "";
+                              if (_folderPathText != null) _folderPathText.Text = dialog.SelectedPath;
+                          }
+                      }
+                  }
+
+                  private string AiKeyPath => Path.Combine(AppConfig.FolderPath, "gemini.key");
+
+                  private bool HasSavedAiKey()
+                  {
+                      try { return File.Exists(AiKeyPath) && new FileInfo(AiKeyPath).Length > 0; }
+                      catch { return false; }
+                  }
+
+                  private string LoadAiApiKey()
+                  {
+                      try
+                      {
+                          if (!File.Exists(AiKeyPath)) return "";
+                          byte[] encrypted = File.ReadAllBytes(AiKeyPath);
+                          return Encoding.UTF8.GetString(ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser));
+                      }
+                      catch { return ""; }
+                  }
+
+                  private void SaveAiSettings()
+                  {
+                      string model = _aiModelBox == null ? "" : _aiModelBox.Text.Trim();
+                      if (!string.IsNullOrWhiteSpace(model)) _config.AiModel = model;
+                      string key = _aiKeyBox == null ? "" : _aiKeyBox.Password.Trim();
+                      try
+                      {
+                          Directory.CreateDirectory(AppConfig.FolderPath);
+                          if (!string.IsNullOrWhiteSpace(key))
+                          {
+                              File.WriteAllBytes(AiKeyPath, ProtectedData.Protect(Encoding.UTF8.GetBytes(key), null, DataProtectionScope.CurrentUser));
+                              _aiKeyBox.Clear();
+                          }
+                          _config.Save();
+                          if (_aiKeyStatusText != null)
+                              _aiKeyStatusText.Text = HasSavedAiKey()
+                                  ? "Saved. The API key is encrypted for this Windows user."
+                                  : "Model saved. Add an API key to enable requests.";
+                      }
+                      catch (Exception ex)
+                      {
+                          MessageBox.Show("Could not save AI settings: " + ex.Message, "AI settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+                      }
+                  }
+
+                  private void RemoveAiKey()
+                  {
+                      try
+                      {
+                          if (File.Exists(AiKeyPath)) File.Delete(AiKeyPath);
+                          if (_aiKeyBox != null) _aiKeyBox.Clear();
+                          if (_aiKeyStatusText != null) _aiKeyStatusText.Text = "Saved API key removed.";
+                      }
+                      catch (Exception ex)
+                      {
+                          MessageBox.Show("Could not remove the saved key: " + ex.Message, "AI settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+                      }
+                  }
+
+                  private static string EncodeField(string value)
+                  {
+                      return Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? ""));
+                  }
+
+                  private static string DecodeField(string value)
+                  {
+                      try { return Encoding.UTF8.GetString(Convert.FromBase64String(value ?? "")); }
+                      catch { return ""; }
+                  }
+
+                  private string ShortcutFilePath => Path.Combine(AppConfig.FolderPath, "shortcuts.dat");
+                  private string FavoritesFilePath => Path.Combine(AppConfig.FolderPath, "favorites.dat");
+
+                  private void LoadShortcuts()
+                  {
+                      _shortcuts.Clear();
+                      try
+                      {
+                          if (!File.Exists(ShortcutFilePath)) return;
+                          foreach (string line in File.ReadAllLines(ShortcutFilePath))
+                          {
+                              string[] parts = line.Split('|');
+                              if (parts.Length != 2) continue;
+                              string name = DecodeField(parts[0]);
+                              string target = DecodeField(parts[1]);
+                              if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(target))
+                                  _shortcuts.Add(new ShortcutAlias { Name = name, Target = target });
+                          }
+                      }
+                      catch { }
+                  }
+
+                  private void SaveShortcuts()
+                  {
+                      try
+                      {
+                          Directory.CreateDirectory(AppConfig.FolderPath);
+                          File.WriteAllLines(ShortcutFilePath, _shortcuts.Select(x => EncodeField(x.Name) + "|" + EncodeField(x.Target)));
+                      }
+                      catch { }
+                  }
+
+                  private void LoadFavorites()
+                  {
+                      _favorites.Clear();
+                      try
+                      {
+                          if (!File.Exists(FavoritesFilePath)) return;
+                          foreach (string line in File.ReadAllLines(FavoritesFilePath))
+                          {
+                              string[] parts = line.Split('|');
+                              if (parts.Length != 4) continue;
+                              string title = DecodeField(parts[0]);
+                              string target = DecodeField(parts[1]);
+                              if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(target)) continue;
+                              _favorites.Add(new FavoriteEntry
+                              {
+                                  Title = title, TargetPath = target, Category = DecodeField(parts[2]), Emoji = DecodeField(parts[3])
+                              });
+                          }
+                      }
+                      catch { }
+                  }
+
+                  private void SaveFavorites()
+                  {
+                      try
+                      {
+                          Directory.CreateDirectory(AppConfig.FolderPath);
+                          File.WriteAllLines(FavoritesFilePath, _favorites.Select(x =>
+                              EncodeField(x.Title) + "|" + EncodeField(x.TargetPath) + "|" + EncodeField(x.Category) + "|" + EncodeField(x.Emoji)));
+                      }
+                      catch { }
+                  }
+
+                  private string ResolveTarget(string target)
+                  {
+                      if (string.IsNullOrWhiteSpace(target)) return "";
+                      string value = target.Trim();
+                      Uri uri;
+                      if (Uri.TryCreate(value, UriKind.Absolute, out uri) &&
+                          (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+                          return uri.AbsoluteUri;
+                      bool executableName = value.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+                                            value.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) ||
+                                            value.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) ||
+                                            value.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
+                                            value.EndsWith(".url", StringComparison.OrdinalIgnoreCase);
+                      if (!executableName && !Path.IsPathRooted(value) && !File.Exists(value) && !Directory.Exists(value) &&
+                          !value.Contains(" ") && value.Contains("."))
+                          return "https://" + value;
+                      return value;
+                  }
+
+                  private bool IsFavorite(SearchItem item)
+                  {
+                      return item != null && !string.IsNullOrWhiteSpace(item.TargetPath) && item.CustomAction == null &&
+                          _favorites.Any(x => string.Equals(x.TargetPath, ResolveTarget(item.TargetPath), StringComparison.OrdinalIgnoreCase));
+                  }
+
+                  private void ToggleFavorite(SearchItem item)
+                  {
+                      if (item == null || string.IsNullOrWhiteSpace(item.TargetPath) || item.CustomAction != null) return;
+                      string target = ResolveTarget(item.TargetPath);
+                      var existing = _favorites.FirstOrDefault(x => string.Equals(x.TargetPath, target, StringComparison.OrdinalIgnoreCase));
+                      if (existing != null) _favorites.Remove(existing);
+                      else _favorites.Insert(0, new FavoriteEntry { Title = item.Title, TargetPath = target, Category = item.Category, Emoji = item.Emoji });
+                      if (_favorites.Count > 100) _favorites = _favorites.Take(100).ToList();
+                      SaveFavorites();
+                      if (_searchBox != null && _searchBox.Text.Trim().StartsWith("fav", StringComparison.OrdinalIgnoreCase))
+                      {
+                          string q = _searchBox.Text.Trim();
+                          RenderFavoritesBoard(q.Length > 3 ? q.Substring(4).Trim() : "");
+                      }
+                      UpdateShortcutList();
+                      if (_searchBox != null) UpdateResults(_searchBox.Text);
+                  }
+
+                  private void LaunchTarget(string target, bool runAsAdmin, bool openFolder, bool hideSearch)
+                  {
+                      string resolved = ResolveTarget(target);
+                      if (string.IsNullOrWhiteSpace(resolved)) return;
+                      if (hideSearch) HideSearch();
+                      try
+                      {
+                          if (openFolder && File.Exists(resolved))
+                              Process.Start("explorer.exe", "/select,\"" + resolved + "\"");
+                          else if (runAsAdmin)
+                              Process.Start(new ProcessStartInfo(resolved) { UseShellExecute = true, Verb = "runas" });
+                          else
+                              Process.Start(new ProcessStartInfo(resolved) { UseShellExecute = true });
+                      }
+                      catch { }
+                  }
+
+                  private List<SearchItem> GetFolderSearchResults(string query)
+                  {
+                      string path = _config.SearchFolderPath;
+                      if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return new List<SearchItem>();
+                      bool stale = _folderCache == null ||
+                          !string.Equals(_folderCachePath, path, StringComparison.OrdinalIgnoreCase) ||
+                          DateTime.Now - _folderCacheLoadedAt > TimeSpan.FromSeconds(45);
+                      if (stale)
+                      {
+                          _folderCache = new List<SearchItem>();
+                          _folderCachePath = path;
+                          _folderCacheLoadedAt = DateTime.Now;
+                          SearchOption option = _config.IncludeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+                          try
+                          {
+                              foreach (string file in Directory.EnumerateFiles(path, "*", option))
+                              {
+                                  _folderCache.Add(new SearchItem { Title = Path.GetFileName(file), Subtitle = file, TargetPath = file, Category = "FILE", Emoji = "📄" });
+                                  if (_folderCache.Count >= 1500) break;
+                              }
+                          }
+                          catch { }
+                          try
+                          {
+                              foreach (string dir in Directory.EnumerateDirectories(path, "*", option))
+                              {
+                                  _folderCache.Add(new SearchItem { Title = Path.GetFileName(dir), Subtitle = dir, TargetPath = dir, Category = "FOLDER", Emoji = "📁" });
+                                  if (_folderCache.Count >= 1500) break;
+                              }
+                          }
+                          catch { }
+                      }
+                      string needle = (query ?? "").Trim();
+                      return _folderCache
+                          .Where(x => string.IsNullOrEmpty(needle) ||
+                              x.Title.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                              x.Subtitle.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                          .OrderByDescending(x => x.Title.StartsWith(needle, StringComparison.OrdinalIgnoreCase))
+                          .ThenBy(x => x.Title.Length)
+                          .Take(8)
+                          .ToList();
+                  }
+
                   private void RenderNotesBoard(string filterText)
                   {
                       _notesContainer.Children.Clear();
@@ -824,6 +1546,7 @@ jobs:
                           Foreground = _primaryTextBrush,
                           MaxHeight = 415
                       };
+                      _settingsTabs = tabs;
 
                       var appearancePage = CreateSettingsPage();
                       var themeCard = CreateSettingsCard(appearancePage, "Appearance", "System mode follows your Windows app theme.");
@@ -1288,6 +2011,7 @@ jobs:
                       _settingsPanel.BorderBrush = new SolidColorBrush(_isLightTheme
                           ? Color.FromArgb(70, 40, 45, 55)
                           : Color.FromArgb(45, 255, 255, 255));
+                      RefreshSettingsTheme(_settingsPanel);
 
                       UpdateResults(_searchBox.Text);
 
@@ -1435,11 +2159,29 @@ jobs:
                   {
                       _resultsList.Items.Clear();
                       string q = (rawQuery ?? "").Trim();
+                      bool folderMode = q.Equals("folder", StringComparison.OrdinalIgnoreCase) ||
+                                        q.StartsWith("folder ", StringComparison.OrdinalIgnoreCase);
+                      if (_favoritesBoard != null) _favoritesBoard.Visibility = Visibility.Collapsed;
+                      if (_aiBoard != null) _aiBoard.Visibility = Visibility.Collapsed;
+                      if (!folderMode) { _folderCache = null; _folderCachePath = ""; }
 
                       if (string.IsNullOrEmpty(q))
                       {
                           _resultsList.Visibility = Visibility.Collapsed;
                           _notesBoard.Visibility = Visibility.Collapsed;
+                          if (_favoritesBoard != null) _favoritesBoard.Visibility = Visibility.Collapsed;
+                          if (_aiBoard != null) _aiBoard.Visibility = Visibility.Collapsed;
+                          return;
+                      }
+
+                      if (_config.EnableFavorites && (q.Equals("fav", StringComparison.OrdinalIgnoreCase) ||
+                          q.StartsWith("fav ", StringComparison.OrdinalIgnoreCase)))
+                      {
+                          _notesBoard.Visibility = Visibility.Collapsed;
+                          _settingsPanel.Visibility = Visibility.Collapsed;
+                          _resultsList.Visibility = Visibility.Collapsed;
+                          _favoritesBoard.Visibility = Visibility.Visible;
+                          RenderFavoritesBoard(q.Length > 3 ? q.Substring(4).Trim() : "");
                           return;
                       }
 
@@ -1486,6 +2228,86 @@ jobs:
                       else
                       {
                           _notesBoard.Visibility = Visibility.Collapsed;
+                      }
+
+                      if (_config.EnableAI && (q.Equals("ai", StringComparison.OrdinalIgnoreCase) ||
+                          q.StartsWith("ai ", StringComparison.OrdinalIgnoreCase)))
+                      {
+                          string prompt = q.Length > 2 ? q.Substring(2).Trim() : "";
+                          var aiItem = new SearchItem
+                          {
+                              Title = string.IsNullOrWhiteSpace(prompt) ? "Ask AI a question" : "Ask Gemini: " + prompt,
+                              Subtitle = string.IsNullOrWhiteSpace(prompt) ? "Type 'ai your question' and press Enter" : "Press Enter to send one request to your configured Gemini model",
+                              Category = "AI",
+                              Emoji = "✦",
+                              CustomAction = () =>
+                              {
+                                  if (string.IsNullOrWhiteSpace(prompt))
+                                  {
+                                      _settingsPanel.Visibility = Visibility.Collapsed;
+                                      _notesBoard.Visibility = Visibility.Collapsed;
+                                      _favoritesBoard.Visibility = Visibility.Collapsed;
+                                      _aiBoard.Visibility = Visibility.Visible;
+                                      _aiStatusText.Text = "AI QUICK START";
+                                      _aiContent.Children.Clear();
+                                      RenderAiMarkdown("Type **ai** followed by a question, then press Enter. Configure your API key and model under Settings → AI.");
+                                  }
+                                  else StartAiQuery(prompt);
+                              }
+                          };
+                          _resultsList.Items.Add(CreateResultRow(aiItem, 0));
+                          _resultsList.SelectedIndex = 0;
+                          _resultsList.Visibility = Visibility.Visible;
+                          return;
+                      }
+
+                      if (_config.EnableFolderSearch && folderMode)
+                      {
+                          var folderItems = new List<SearchItem>();
+                          if (q.Equals("folder", StringComparison.OrdinalIgnoreCase))
+                          {
+                              if (Directory.Exists(_config.SearchFolderPath))
+                              {
+                                  folderItems.Add(new SearchItem
+                                  {
+                                      Title = "Open selected folder", Subtitle = _config.SearchFolderPath,
+                                      TargetPath = _config.SearchFolderPath, Category = "FOLDER", Emoji = "📁"
+                                  });
+                                  folderItems.Add(new SearchItem
+                                  {
+                                      Title = "Search inside selected folder",
+                                      Subtitle = "Continue typing: folder report, folder invoice, etc.",
+                                      Category = "HELP", Emoji = "🔎",
+                                      CustomAction = () =>
+                                      {
+                                          _settingsPanel.Visibility = Visibility.Visible;
+                                          if (_settingsTabs != null) _settingsTabs.SelectedIndex = 3;
+                                      }
+                                  });
+                              }
+                              else
+                              {
+                                  folderItems.Add(new SearchItem
+                                  {
+                                      Title = "Choose a folder in Settings → Folders",
+                                      Subtitle = "Only the folder you select will be searched",
+                                      Category = "HELP", Emoji = "📁",
+                                      CustomAction = () =>
+                                      {
+                                          _settingsPanel.Visibility = Visibility.Visible;
+                                          if (_settingsTabs != null) _settingsTabs.SelectedIndex = 3;
+                                      }
+                                  });
+                              }
+                          }
+                          else folderItems.AddRange(GetFolderSearchResults(q.Substring(7).Trim()));
+
+                          int folderIndex = 0;
+                          foreach (var folderItem in folderItems.Take(8))
+                              _resultsList.Items.Add(CreateResultRow(folderItem, folderIndex++));
+                          _resultsList.Visibility = _resultsList.Items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+                          if (_resultsList.Items.Count > 0) _resultsList.SelectedIndex = 0;
+                          return;
                       }
 
                       var finalItems = new List<SearchItem>();
@@ -1604,6 +2426,31 @@ jobs:
 
                       finalItems.AddRange(sortedMatches);
 
+                      if (_config.EnableShortcuts)
+                      {
+                          var aliasMatches = _shortcuts
+                              .Where(a => a.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                  q.StartsWith(a.Name + " ", StringComparison.OrdinalIgnoreCase))
+                              .OrderByDescending(a => string.Equals(a.Name, q, StringComparison.OrdinalIgnoreCase))
+                              .ThenBy(a => a.Name.Length)
+                              .Take(8)
+                              .ToList();
+                          foreach (var alias in aliasMatches)
+                          {
+                              var shortcutItem = new SearchItem
+                              {
+                                  Title = alias.Name + "  →  " + alias.Target,
+                                  Subtitle = "Custom shortcut • open target",
+                                  TargetPath = ResolveTarget(alias.Target),
+                                  Category = "ALIAS",
+                                  Emoji = "⚡"
+                              };
+                              if (string.Equals(alias.Name, q, StringComparison.OrdinalIgnoreCase))
+                                  finalItems.Insert(0, shortcutItem);
+                              else finalItems.Add(shortcutItem);
+                          }
+                      }
+
                       // Direct webpage navigation: "chatgpt.com", "https://example.com", or "sea chatgpt.com".
                       string directInput = q;
                       if (directInput.StartsWith("sea ", StringComparison.OrdinalIgnoreCase))
@@ -1706,6 +2553,7 @@ jobs:
                       grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                       grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                       grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                      grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
                       // 1. Real Icon or Emoji Badge
                       UIElement iconElement = null;
@@ -1783,6 +2631,29 @@ jobs:
                       grid.Children.Add(iconElement);
                       grid.Children.Add(leftStack);
                       grid.Children.Add(badge);
+
+                      bool pinnable = _config.EnableFavorites && !string.IsNullOrWhiteSpace(item.TargetPath) && item.CustomAction == null;
+                      bool alreadyPinned = IsFavorite(item);
+                      var pinButton = new Button
+                      {
+                          Content = alreadyPinned ? "★" : "☆",
+                          FontSize = 17,
+                          Foreground = alreadyPinned ? new SolidColorBrush(Color.FromRgb(240, 180, 65)) : _secondaryTextBrush,
+                          Background = Brushes.Transparent,
+                          BorderThickness = new Thickness(0),
+                          Padding = new Thickness(9, 1, 4, 1),
+                          Margin = new Thickness(4, 0, 0, 0),
+                          Cursor = pinnable ? Cursors.Hand : Cursors.Arrow,
+                          IsEnabled = pinnable,
+                          ToolTip = pinnable ? (alreadyPinned ? "Unpin favorite" : "Pin to favorites") : "This action cannot be pinned"
+                      };
+                      pinButton.Click += (s, e) =>
+                      {
+                          e.Handled = true;
+                          ToggleFavorite(item);
+                      };
+                      Grid.SetColumn(pinButton, 3);
+                      grid.Children.Add(pinButton);
                       rowBorder.Child = grid;
 
                       // Smooth staggered entrance animation for each row
@@ -1873,31 +2744,11 @@ jobs:
                       if (item.CustomAction != null)
                       {
                           item.CustomAction.Invoke();
-                          if (item.Category != "NOTE") HideSearch();
+                          if (item.Category != "NOTE" && item.Category != "AI" && item.Category != "HELP") HideSearch();
                           return;
                       }
 
-                      HideSearch();
-                      try
-                      {
-                          if (openFolder && File.Exists(item.TargetPath))
-                          {
-                              Process.Start("explorer.exe", "/select,\"" + item.TargetPath + "\"");
-                          }
-                          else if (runAsAdmin)
-                          {
-                              Process.Start(new ProcessStartInfo(item.TargetPath)
-                              {
-                                  UseShellExecute = true,
-                                  Verb = "runas"
-                              });
-                          }
-                          else
-                          {
-                              Process.Start(new ProcessStartInfo(item.TargetPath) { UseShellExecute = true });
-                          }
-                      }
-                      catch { }
+                      LaunchTarget(item.TargetPath, runAsAdmin, openFolder, true);
                   }
 
                   public void ToggleSearch()
