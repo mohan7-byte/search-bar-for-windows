@@ -2277,6 +2277,7 @@ jobs:
                                       _settingsPanel.Visibility = Visibility.Collapsed;
                                       _notesBoard.Visibility = Visibility.Collapsed;
                                       _favoritesBoard.Visibility = Visibility.Collapsed;
+                                      _resultsList.Visibility = Visibility.Collapsed;
                                       _aiBoard.Visibility = Visibility.Visible;
                                       _aiStatusText.Text = "AI QUICK START";
                                       _aiContent.Children.Clear();
@@ -2310,6 +2311,10 @@ jobs:
                                       Category = "HELP", Emoji = "🔎",
                                       CustomAction = () =>
                                       {
+                                          _resultsList.Visibility = Visibility.Collapsed;
+                                          _notesBoard.Visibility = Visibility.Collapsed;
+                                          _favoritesBoard.Visibility = Visibility.Collapsed;
+                                          _aiBoard.Visibility = Visibility.Collapsed;
                                           _settingsPanel.Visibility = Visibility.Visible;
                                           if (_settingsTabs != null) _settingsTabs.SelectedIndex = 3;
                                       }
@@ -2324,6 +2329,10 @@ jobs:
                                       Category = "HELP", Emoji = "📁",
                                       CustomAction = () =>
                                       {
+                                          _resultsList.Visibility = Visibility.Collapsed;
+                                          _notesBoard.Visibility = Visibility.Collapsed;
+                                          _favoritesBoard.Visibility = Visibility.Collapsed;
+                                          _aiBoard.Visibility = Visibility.Collapsed;
                                           _settingsPanel.Visibility = Visibility.Visible;
                                           if (_settingsTabs != null) _settingsTabs.SelectedIndex = 3;
                                       }
