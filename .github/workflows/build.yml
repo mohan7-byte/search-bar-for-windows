@@ -1003,7 +1003,7 @@ jobs:
                       var userBody = userBubble.Child as StackPanel;
                       if (user.ImageData != null)
                       {
-                          var image = CreateImageFromBytes(user.ImageData);
+                          var image = new Image { Source = CreateImageFromBytes(user.ImageData), Stretch = Stretch.Uniform };
                           image.MaxWidth = 340; image.MaxHeight = 190;
                           image.HorizontalAlignment = HorizontalAlignment.Left; image.Margin = new Thickness(0, 0, 0, 7);
                           userBody.Children.Add(image);
@@ -1167,14 +1167,14 @@ jobs:
                       catch (Exception ex) { _aiStatusText.Text = "Could not read clipboard image: " + ex.Message; return false; }
                   }
 
-                  private static Image CreateImageFromBytes(byte[] bytes)
+                  private static BitmapSource CreateImageFromBytes(byte[] bytes)
                   {
                       var bitmap = new BitmapImage();
                       using (var ms = new MemoryStream(bytes))
                       {
                           bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.StreamSource = ms; bitmap.EndInit(); bitmap.Freeze();
                       }
-                      return new Image { Source = bitmap, Stretch = Stretch.Uniform };
+                      return bitmap;
                   }
 
                   private async Task<string> AskGeminiStreamingAsync(List<AiChatMessage> history, CancellationToken token, Action<string> onText)
