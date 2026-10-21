@@ -496,7 +496,7 @@ jobs:
                           {
                               AccentState = _config.EnableAcrylic ? 4 : 0, // ACCENT_ENABLE_ACRYLICBLURBEHIND
                               AccentFlags = 2,
-                              GradientColor = unchecked((int)0xB8181C26)
+                              GradientColor = unchecked((int)(((uint)Math.Max(140, Math.Min(255, (int)Math.Round(_config.WindowOpacity * 2.55))) << 24) | 0x00181C26u))
                           };
                           int size = Marshal.SizeOf(accent);
                           IntPtr ptr = Marshal.AllocHGlobal(size);
@@ -1904,13 +1904,14 @@ jobs:
                           UpdateAcrylicBlur();
                           ApplyThemeAndGeometry();
                       }));
-                      themeCard.Children.Add(CreateSliderRow("Background transparency", 55, 100, _config.WindowOpacity, val =>
+                      themeCard.Children.Add(CreateSliderRow("Background transparency", 0, 45, 100 - _config.WindowOpacity, val =>
                       {
-                          _config.WindowOpacity = Math.Max(55, Math.Min(100, Math.Round(val)));
+                          _config.WindowOpacity = Math.Max(55, Math.Min(100, 100 - Math.Round(val)));
                           _config.Save();
+                          UpdateAcrylicBlur();
                           ApplyThemeAndGeometry();
                       }));
-                      themeCard.Children.Add(CreateSettingsInfo("Lower opacity reveals more of your wallpaper. Text stays crisp; blur can be toggled independently."));
+                      themeCard.Children.Add(CreateSettingsInfo("Higher transparency reveals more of your wallpaper. Use lower values for stronger contrast; blur can be toggled independently."));
 
                       var layoutCard = CreateSettingsCard(appearancePage, "Position & shape", "Adjust screen placement and size.");
                       layoutCard.Children.Add(CreateSliderRow("Width (px)", 480, 920, _config.WindowWidth, val =>
