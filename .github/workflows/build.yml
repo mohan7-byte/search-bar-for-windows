@@ -96,6 +96,7 @@ jobs:
           using System.Net.Http;
           using System.Security.Cryptography;
           using System.Text;
+          using System.Threading;
           using System.Threading.Tasks;
           using System.Web.Script.Serialization;
           using System.Windows;
@@ -145,6 +146,14 @@ jobs:
                   public string Emoji { get; set; }
               }
 
+              public class AiChatMessage
+              {
+                  public string Role { get; set; }
+                  public string Text { get; set; }
+                  public byte[] ImageData { get; set; }
+                  public string MimeType { get; set; }
+              }
+
               public class AppConfig
               {
                   public bool SearchApps { get; set; } = true;
@@ -158,6 +167,7 @@ jobs:
                   public bool EnableKill { get; set; } = true;
                   public bool EnableNotes { get; set; } = true;
                   public bool EnableAcrylic { get; set; } = true;
+                  public double WindowOpacity { get; set; } = 88;
                   public bool EnableShortcuts { get; set; } = true;
                   public bool EnableFavorites { get; set; } = true;
                   public bool EnableFolderSearch { get; set; } = true;
@@ -195,6 +205,7 @@ jobs:
                               "EnableKill=" + EnableKill,
                               "EnableNotes=" + EnableNotes,
                               "EnableAcrylic=" + EnableAcrylic,
+                              "WindowOpacity=" + WindowOpacity,
                               "EnableShortcuts=" + EnableShortcuts,
                               "EnableFavorites=" + EnableFavorites,
                               "EnableFolderSearch=" + EnableFolderSearch,
@@ -240,6 +251,7 @@ jobs:
                                   else if (k == "EnableKill") cfg.EnableKill = bVal;
                                   else if (k == "EnableNotes") cfg.EnableNotes = bVal;
                                   else if (k == "EnableAcrylic") cfg.EnableAcrylic = bVal;
+                                  else if (k == "WindowOpacity" && double.TryParse(v, out dVal)) cfg.WindowOpacity = Math.Max(55, Math.Min(100, dVal));
                                   else if (k == "EnableShortcuts") cfg.EnableShortcuts = bVal;
                                   else if (k == "EnableFavorites") cfg.EnableFavorites = bVal;
                                   else if (k == "EnableFolderSearch") cfg.EnableFolderSearch = bVal;
@@ -340,6 +352,18 @@ jobs:
                   private string _folderCachePath = "";
                   private DateTime _folderCacheLoadedAt = DateTime.MinValue;
                   private string _lastAiResponse = "";
+                  private readonly List<AiChatMessage> _aiConversation = new List<AiChatMessage>();
+                  private CancellationTokenSource _aiCancellation;
+                  private byte[] _pendingAiImageBytes;
+                  private string _pendingAiImageMimeType = "image/png";
+                  private int _aiGeneration;
+                  private bool _aiRequestRunning;
+                  private ScrollViewer _aiScrollViewer;
+                  private TextBox _aiComposer;
+                  private Button _aiSendButton;
+                  private Button _aiStopButton;
+                  private Border _aiImagePreviewPanel;
+                  private Image _aiPreviewImage;
                   private static readonly HttpClient _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
 
                   private Border _mainBorder;
@@ -435,6 +459,7 @@ jobs:
 
                   protected override void OnClosed(EventArgs e)
                   {
+                      ClearAiSession();
                       if (_systemThemeListenerAttached)
                       {
                           Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
@@ -469,9 +494,9 @@ jobs:
                           if (hwnd == IntPtr.Zero) return;
                           var accent = new AccentPolicy
                           {
-                              AccentState = _config.EnableAcrylic ? 3 : 0, // 3 = ACCENT_ENABLE_BLURBEHIND
+                              AccentState = _config.EnableAcrylic ? 4 : 0, // ACCENT_ENABLE_ACRYLICBLURBEHIND
                               AccentFlags = 2,
-                              GradientColor = unchecked((int)0x99141418)
+                              GradientColor = unchecked((int)0xB8181C26)
                           };
                           int size = Marshal.SizeOf(accent);
                           IntPtr ptr = Marshal.AllocHGlobal(size);
@@ -718,51 +743,129 @@ jobs:
                       var board = new Border
                       {
                           Background = Brushes.Transparent,
-                          BorderBrush = new SolidColorBrush(Color.FromArgb(55, 140, 150, 170)),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(65, 145, 160, 185)),
                           BorderThickness = new Thickness(0, 1, 0, 0),
-                          Padding = new Thickness(16, 13, 16, 14),
+                          Padding = new Thickness(16, 12, 16, 14),
                           Visibility = Visibility.Collapsed,
-                          MaxHeight = 470
+                          MaxHeight = 640
                       };
                       var root = new StackPanel();
-                      var header = new Grid { Margin = new Thickness(0, 0, 0, 9) };
+                      var header = new Grid { Margin = new Thickness(0, 0, 0, 10) };
                       header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                       header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                      header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                       var headerStack = new StackPanel();
-                      headerStack.Children.Add(new TextBlock
-                      {
-                          Text = "✦  AI ANSWER", FontSize = 12, FontWeight = FontWeights.Bold,
-                          Foreground = _primaryTextBrush
-                      });
-                      _aiStatusText = new TextBlock
-                      {
-                          Text = "Ready", FontSize = 10.5, Foreground = _secondaryTextBrush,
-                          Margin = new Thickness(0, 2, 0, 0)
-                      };
+                      headerStack.Children.Add(new TextBlock { Text = "✦  AI CONVERSATION", FontSize = 12, FontWeight = FontWeights.Bold, Foreground = _primaryTextBrush });
+                      _aiStatusText = new TextBlock { Text = "SESSION ONLY  •  Chat is not saved to disk", FontSize = 10.5, Foreground = _secondaryTextBrush, Margin = new Thickness(0, 2, 0, 0) };
                       headerStack.Children.Add(_aiStatusText);
-                      Grid.SetColumn(headerStack, 0);
-                      header.Children.Add(headerStack);
+                      Grid.SetColumn(headerStack, 0); header.Children.Add(headerStack);
+                      var endButton = new Button
+                      {
+                          Content = "End chat", FontSize = 10.5, Padding = new Thickness(9, 5, 9, 5), Margin = new Thickness(0, 0, 6, 0),
+                          BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromArgb(75, 140, 150, 170)),
+                          Background = Brushes.Transparent, Foreground = _primaryTextBrush, Cursor = Cursors.Hand,
+                          VerticalAlignment = VerticalAlignment.Center, ToolTip = "Clear session messages and image data from memory"
+                      };
+                      endButton.Click += (s, e) => { ClearAiSession(); _aiBoard.Visibility = Visibility.Visible; _aiStatusText.Text = "NEW SESSION  •  Nothing from the previous chat was saved"; _aiComposer.Focus(); };
+                      Grid.SetColumn(endButton, 1); header.Children.Add(endButton);
                       var copyButton = new Button
                       {
-                          Content = "Copy", FontSize = 11, Padding = new Thickness(10, 5, 10, 5),
-                          BorderThickness = new Thickness(1),
-                          BorderBrush = new SolidColorBrush(Color.FromArgb(85, 140, 150, 170)),
-                          Background = Brushes.Transparent, Foreground = _primaryTextBrush,
-                          Cursor = Cursors.Hand, VerticalAlignment = VerticalAlignment.Center
+                          Content = "Copy last", FontSize = 10.5, Padding = new Thickness(9, 5, 9, 5),
+                          BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromArgb(75, 140, 150, 170)),
+                          Background = Brushes.Transparent, Foreground = _primaryTextBrush, Cursor = Cursors.Hand,
+                          VerticalAlignment = VerticalAlignment.Center, ToolTip = "Copy the latest completed AI answer"
                       };
-                      copyButton.Click += (s, e) =>
+                      copyButton.Click += (s, e) => { try { if (!string.IsNullOrEmpty(_lastAiResponse)) Clipboard.SetText(_lastAiResponse); } catch { } };
+                      Grid.SetColumn(copyButton, 2); header.Children.Add(copyButton); root.Children.Add(header);
+
+                      _aiScrollViewer = new ScrollViewer { MaxHeight = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, CanContentScroll = false };
+                      _aiContent = new StackPanel { Margin = new Thickness(0, 1, 4, 8) };
+                      _aiScrollViewer.Content = _aiContent; root.Children.Add(_aiScrollViewer);
+
+                      _aiImagePreviewPanel = new Border
                       {
-                          try { if (!string.IsNullOrEmpty(_lastAiResponse)) Clipboard.SetText(_lastAiResponse); } catch { }
+                          Visibility = Visibility.Collapsed, CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(65, 145, 160, 185)),
+                          Background = new SolidColorBrush(Color.FromArgb(24, 130, 145, 165)), Padding = new Thickness(7), Margin = new Thickness(0, 2, 0, 7)
                       };
-                      Grid.SetColumn(copyButton, 1);
-                      header.Children.Add(copyButton);
-                      root.Children.Add(header);
-                      var scroll = new ScrollViewer { MaxHeight = 380, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-                      _aiContent = new StackPanel { Margin = new Thickness(0, 2, 0, 0) };
-                      scroll.Content = _aiContent;
-                      root.Children.Add(scroll);
-                      board.Child = root;
-                      return board;
+                      var previewGrid = new Grid();
+                      previewGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                      previewGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                      previewGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                      _aiPreviewImage = new Image { Width = 54, Height = 48, Stretch = Stretch.UniformToFill, ClipToBounds = true, Margin = new Thickness(0, 0, 10, 0) };
+                      Grid.SetColumn(_aiPreviewImage, 0); previewGrid.Children.Add(_aiPreviewImage);
+                      var previewLabel = new TextBlock { Text = "Image attached", FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = _primaryTextBrush, VerticalAlignment = VerticalAlignment.Center };
+                      Grid.SetColumn(previewLabel, 1); previewGrid.Children.Add(previewLabel);
+                      var removeImageButton = new Button { Content = "×", FontSize = 18, Padding = new Thickness(8, 0, 8, 0), Background = Brushes.Transparent, BorderThickness = new Thickness(0), Foreground = _secondaryTextBrush, Cursor = Cursors.Hand, ToolTip = "Remove attached image" };
+                      removeImageButton.Click += (s, e) => ClearPendingAiImage();
+                      Grid.SetColumn(removeImageButton, 2); previewGrid.Children.Add(removeImageButton);
+                      _aiImagePreviewPanel.Child = previewGrid; root.Children.Add(_aiImagePreviewPanel);
+
+                      var composerShell = new Border
+                      {
+                          CornerRadius = new CornerRadius(14), BorderThickness = new Thickness(1),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(80, 135, 150, 175)),
+                          Background = new SolidColorBrush(Color.FromArgb(22, 125, 140, 160)),
+                          Padding = new Thickness(9), Margin = new Thickness(0, 1, 0, 0)
+                      };
+                      var composerGrid = new Grid();
+                      composerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                      composerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                      composerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                      composerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                      byte[] palette = GetActiveThemePalette();
+                      _aiComposer = new TextBox
+                      {
+                          FontSize = 12.5, Padding = new Thickness(4, 4, 4, 6), MinHeight = 30, MaxHeight = 92,
+                          TextWrapping = TextWrapping.Wrap, AcceptsReturn = true, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                          BorderThickness = new Thickness(0), Background = Brushes.Transparent, Foreground = _primaryTextBrush,
+                          CaretBrush = new SolidColorBrush(Color.FromRgb(palette[3], palette[4], palette[5])),
+                          ToolTip = "Ask a follow-up. Enter sends; Shift+Enter adds a new line. Ctrl+V pastes an image."
+                      };
+                      Grid.SetRow(_aiComposer, 0); Grid.SetColumnSpan(_aiComposer, 2); composerGrid.Children.Add(_aiComposer);
+
+                      var composeActions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 0) };
+                      var pasteButton = new Button
+                      {
+                          Content = "▧  Paste image", FontSize = 10.5, Padding = new Thickness(10, 6, 10, 6), BorderThickness = new Thickness(1),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(65, 135, 150, 175)), Background = Brushes.Transparent,
+                          Foreground = _primaryTextBrush, Cursor = Cursors.Hand, ToolTip = "Attach the image currently on your clipboard"
+                      };
+                      pasteButton.Click += (s, e) => AttachClipboardImage(); composeActions.Children.Add(pasteButton);
+                      composeActions.Children.Add(new TextBlock { Text = "  Ctrl+V image  ·  Enter send", FontSize = 10, Foreground = _secondaryTextBrush, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) });
+                      Grid.SetRow(composeActions, 1); Grid.SetColumn(composeActions, 0); composerGrid.Children.Add(composeActions);
+
+                      var sendActions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(8, 6, 0, 0) };
+                      _aiStopButton = new Button
+                      {
+                          Content = "Stop", FontSize = 10.5, Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 0, 5, 0),
+                          BorderThickness = new Thickness(1), BorderBrush = new SolidColorBrush(Color.FromArgb(85, 210, 95, 95)),
+                          Background = new SolidColorBrush(Color.FromArgb(24, 210, 70, 70)), Foreground = _primaryTextBrush,
+                          Cursor = Cursors.Hand, Visibility = Visibility.Collapsed, ToolTip = "Stop response generation"
+                      };
+                      _aiStopButton.Click += (s, e) => { try { if (_aiCancellation != null && !_aiCancellation.IsCancellationRequested) { _aiStatusText.Text = "Stopping generation…"; _aiCancellation.Cancel(); } } catch { } };
+                      sendActions.Children.Add(_aiStopButton);
+                      _aiSendButton = new Button
+                      {
+                          Content = "↑  Send", FontSize = 11, FontWeight = FontWeights.SemiBold, Padding = new Thickness(14, 6, 14, 6),
+                          BorderThickness = new Thickness(0), Background = new SolidColorBrush(Color.FromRgb(46, 126, 230)),
+                          Foreground = Brushes.White, Cursor = Cursors.Hand, ToolTip = "Send message"
+                      };
+                      _aiSendButton.Click += (s, e) => SendAiComposerMessage(); sendActions.Children.Add(_aiSendButton);
+                      Grid.SetRow(sendActions, 1); Grid.SetColumn(sendActions, 1); composerGrid.Children.Add(sendActions);
+                      composerShell.Child = composerGrid; root.Children.Add(composerShell);
+
+                      _aiComposer.PreviewKeyDown += (s, e) =>
+                      {
+                          bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+                          bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+                          if (ctrl && e.Key == Key.V)
+                          {
+                              try { if (Clipboard.ContainsImage()) { e.Handled = AttachClipboardImage(); return; } } catch { }
+                          }
+                          if (e.Key == Key.Enter && !shift) { e.Handled = true; SendAiComposerMessage(); }
+                      };
+                      board.Child = root; return board;
                   }
 
                   private void RenderFavoritesBoard(string filterText)
@@ -856,156 +959,339 @@ jobs:
                       _favoritesBoard.Visibility = Visibility.Collapsed;
                       _resultsList.Visibility = Visibility.Collapsed;
                       _aiBoard.Visibility = Visibility.Visible;
-                      _aiContent.Children.Clear();
-                      _aiBoard.Opacity = 0;
-                      _aiBoard.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
-                      _aiStatusText.Text = "Connecting to " + (string.IsNullOrWhiteSpace(_config.AiModel) ? "Gemini" : _config.AiModel) + "…";
+                      if (string.IsNullOrWhiteSpace(prompt))
+                      {
+                          _aiStatusText.Text = "SESSION ONLY  •  Chat and images are not saved";
+                          if (_aiConversation.Count == 0 && _aiContent.Children.Count == 0)
+                          {
+                              var welcome = CreateAiBubble(true, "READY WHEN YOU ARE");
+                              RenderAiMarkdownInto(welcome.Child as StackPanel, "Ask a question, continue a conversation, or press **Ctrl+V** to attach a screenshot. Your chat exists only in this running session.", false);
+                              _aiContent.Children.Add(welcome);
+                          }
+                          return;
+                      }
+                      SendAiMessage(prompt, null, null);
+                  }
 
-                      var loadingPanel = new Border
+                  private void SendAiComposerMessage()
+                  {
+                      if (_aiRequestRunning) { _aiStatusText.Text = "Please wait for the current response or press Stop."; return; }
+                      string prompt = _aiComposer == null ? "" : _aiComposer.Text.Trim();
+                      if (string.IsNullOrWhiteSpace(prompt) && _pendingAiImageBytes == null) return;
+                      if (_aiComposer != null) _aiComposer.Clear();
+                      SendAiMessage(prompt, _pendingAiImageBytes, _pendingAiImageMimeType);
+                  }
+
+                  private void SendAiMessage(string prompt, byte[] imageBytes, string mimeType)
+                  {
+                      if (_aiBoard == null || _aiRequestRunning) return;
+                      _settingsPanel.Visibility = Visibility.Collapsed;
+                      _notesBoard.Visibility = Visibility.Collapsed;
+                      _favoritesBoard.Visibility = Visibility.Collapsed;
+                      _resultsList.Visibility = Visibility.Collapsed;
+                      _aiBoard.Visibility = Visibility.Visible;
+
+                      var user = new AiChatMessage
                       {
-                          CornerRadius = new CornerRadius(12), Padding = new Thickness(16),
-                          Background = new SolidColorBrush(Color.FromArgb(20, 120, 130, 150))
+                          Role = "user", Text = prompt ?? "",
+                          ImageData = imageBytes == null ? null : (byte[])imageBytes.Clone(),
+                          MimeType = string.IsNullOrWhiteSpace(mimeType) ? "image/png" : mimeType
                       };
-                      var loadingStack = new StackPanel();
-                      loadingStack.Children.Add(new TextBlock
+                      if (string.IsNullOrWhiteSpace(user.Text) && user.ImageData != null) user.Text = "Please analyze this image.";
+                      _aiConversation.Add(user);
+                      var userBubble = CreateAiBubble(false, "YOU");
+                      var userBody = userBubble.Child as StackPanel;
+                      if (user.ImageData != null)
                       {
-                          Text = "Preparing your answer", FontSize = 13, FontWeight = FontWeights.SemiBold,
-                          Foreground = _primaryTextBrush
-                      });
-                      loadingStack.Children.Add(new TextBlock
-                      {
-                          Text = "This request runs only because you asked for it.",
-                          FontSize = 11, Foreground = _secondaryTextBrush, Margin = new Thickness(0, 4, 0, 10)
-                      });
-                      loadingStack.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 3, Minimum = 0, Maximum = 100 });
-                      loadingPanel.Child = loadingStack;
-                      _aiContent.Children.Add(loadingPanel);
+                          var image = CreateImageFromBytes(user.ImageData);
+                          image.MaxWidth = 340; image.MaxHeight = 190;
+                          image.HorizontalAlignment = HorizontalAlignment.Left; image.Margin = new Thickness(0, 0, 0, 7);
+                          userBody.Children.Add(image);
+                      }
+                      if (!string.IsNullOrWhiteSpace(user.Text))
+                          userBody.Children.Add(new TextBlock { Text = user.Text, FontSize = 12.5, Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, LineHeight = 20 });
+                      _aiContent.Children.Add(userBubble);
+                      ClearPendingAiImage();
+
+                      var assistantBubble = CreateAiBubble(true, "✦  GEMINI");
+                      var assistantBody = assistantBubble.Child as StackPanel;
+                      var liveText = new TextBlock { Text = "", FontSize = 12.5, Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, LineHeight = 20 };
+                      assistantBody.Children.Add(liveText); _aiContent.Children.Add(assistantBubble);
+                      _aiScrollViewer.ScrollToEnd();
+
+                      int generation = ++_aiGeneration;
+                      List<AiChatMessage> snapshot = CloneAiMessages(_aiConversation);
+                      var cancellation = new CancellationTokenSource();
+                      _aiCancellation = cancellation; _aiRequestRunning = true;
+                      _aiSendButton.IsEnabled = false; _aiStopButton.Visibility = Visibility.Visible;
+                      string modelName = string.IsNullOrWhiteSpace(_config.AiModel) ? "Gemini" : _config.AiModel;
+                      _aiStatusText.Text = "CONNECTING  •  " + modelName;
+                      var streamed = new StringBuilder();
 
                       Task.Run(async () =>
                       {
-                          string answer;
-                          try { answer = await AskGeminiAsync(prompt).ConfigureAwait(false); }
-                          catch (Exception ex) { answer = "AI request failed: " + ex.Message; }
-                          _ = Dispatcher.BeginInvoke(new Action(() =>
+                          string answer = ""; bool completed = false; bool canceled = false;
+                          try
                           {
-                              _lastAiResponse = answer ?? "No response was returned.";
-                              _aiStatusText.Text = "ANSWER  •  " + (string.IsNullOrWhiteSpace(_config.AiModel) ? "Gemini" : _config.AiModel);
-                              _aiContent.Children.Clear();
-                              RenderAiMarkdown(_lastAiResponse);
-                          }));
+                              await AskGeminiStreamingAsync(snapshot, cancellation.Token, chunk =>
+                              {
+                                  string current;
+                                  lock (streamed) { streamed.Append(chunk); current = streamed.ToString(); }
+                                  Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+                                  {
+                                      if (generation != _aiGeneration) return;
+                                      liveText.Text = current;
+                                      if (_aiScrollViewer != null) _aiScrollViewer.ScrollToEnd();
+                                  }));
+                              }).ConfigureAwait(false);
+                              lock (streamed) answer = streamed.ToString();
+                              if (string.IsNullOrWhiteSpace(answer)) throw new InvalidOperationException("Gemini returned no text answer. Please try again.");
+                              completed = true;
+                          }
+                          catch (OperationCanceledException) { canceled = true; lock (streamed) answer = streamed.ToString(); }
+                          catch (Exception ex) { answer = "AI request failed: " + ex.Message; }
+                          finally
+                          {
+                              ClearAiMessages(snapshot);
+                              cancellation.Dispose();
+                              Dispatcher.BeginInvoke(new Action(() =>
+                              {
+                                  if (generation != _aiGeneration) return;
+                                  if (assistantBody.Children.Contains(liveText)) assistantBody.Children.Remove(liveText);
+                                  if (string.IsNullOrWhiteSpace(answer)) answer = canceled ? "Generation stopped." : "Gemini returned no text answer. Please try again.";
+                                  RenderAiMarkdownInto(assistantBody, answer, false);
+                                  if (completed)
+                                  {
+                                      _lastAiResponse = answer;
+                                      _aiConversation.Add(new AiChatMessage { Role = "model", Text = answer });
+                                      _aiStatusText.Text = "ANSWER READY  •  " + modelName + "  •  SESSION ONLY";
+                                  }
+                                  else if (canceled) _aiStatusText.Text = "STOPPED  •  Partial output is visible but not in chat context";
+                                  else { _lastAiResponse = ""; _aiStatusText.Text = "REQUEST FAILED  •  Check the message above"; }
+                                  _aiRequestRunning = false;
+                                  if (ReferenceEquals(_aiCancellation, cancellation)) _aiCancellation = null;
+                                  _aiStopButton.Visibility = Visibility.Collapsed; _aiSendButton.IsEnabled = true;
+                                  _aiScrollViewer.ScrollToEnd(); _aiComposer.Focus();
+                              }));
+                          }
                       });
                   }
 
-                  private async Task<string> AskGeminiAsync(string prompt)
+                  private Border CreateAiBubble(bool assistant, string heading)
+                  {
+                      byte[] p = GetActiveThemePalette();
+                      var b = new Border
+                      {
+                          CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1),
+                          BorderBrush = new SolidColorBrush(Color.FromArgb(assistant ? (byte)36 : (byte)52, p[3], p[4], p[5])),
+                          Background = new SolidColorBrush(Color.FromArgb(assistant ? (byte)14 : (byte)22, p[3], p[4], p[5])),
+                          Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(0, 0, 0, 8)
+                      };
+                      var body = new StackPanel();
+                      body.Children.Add(new TextBlock
+                      {
+                          Text = heading, FontSize = 10, FontWeight = FontWeights.Bold,
+                          Foreground = assistant ? new SolidColorBrush(Color.FromRgb(p[3], p[4], p[5])) : _secondaryTextBrush,
+                          Margin = new Thickness(0, 0, 0, 6)
+                      });
+                      b.Child = body; return b;
+                  }
+
+                  private static List<AiChatMessage> CloneAiMessages(IEnumerable<AiChatMessage> messages)
+                  {
+                      var clone = new List<AiChatMessage>();
+                      foreach (var m in messages)
+                          clone.Add(new AiChatMessage { Role = m.Role, Text = m.Text, MimeType = m.MimeType, ImageData = m.ImageData == null ? null : (byte[])m.ImageData.Clone() });
+                      return clone;
+                  }
+
+                  private static void ClearAiMessages(List<AiChatMessage> messages)
+                  {
+                      if (messages == null) return;
+                      foreach (var m in messages)
+                      {
+                          if (m.ImageData != null) { Array.Clear(m.ImageData, 0, m.ImageData.Length); m.ImageData = null; }
+                          m.Text = null; m.MimeType = null; m.Role = null;
+                      }
+                      messages.Clear();
+                  }
+
+                  private void ClearPendingAiImage()
+                  {
+                      if (_pendingAiImageBytes != null) { Array.Clear(_pendingAiImageBytes, 0, _pendingAiImageBytes.Length); _pendingAiImageBytes = null; }
+                      _pendingAiImageMimeType = "image/png";
+                      if (_aiPreviewImage != null) _aiPreviewImage.Source = null;
+                      if (_aiImagePreviewPanel != null) _aiImagePreviewPanel.Visibility = Visibility.Collapsed;
+                  }
+
+                  private void ClearAiSession()
+                  {
+                      ++_aiGeneration;
+                      try { if (_aiCancellation != null) _aiCancellation.Cancel(); } catch { }
+                      _aiCancellation = null; _aiRequestRunning = false;
+                      ClearAiMessages(_aiConversation); ClearPendingAiImage(); _lastAiResponse = "";
+                      if (_aiContent != null) _aiContent.Children.Clear();
+                      if (_aiComposer != null) _aiComposer.Clear();
+                      if (_aiSendButton != null) _aiSendButton.IsEnabled = true;
+                      if (_aiStopButton != null) _aiStopButton.Visibility = Visibility.Collapsed;
+                      if (_aiStatusText != null) _aiStatusText.Text = "SESSION CLEARED  •  Nothing is saved to disk";
+                  }
+
+                  private bool AttachClipboardImage()
+                  {
+                      try
+                      {
+                          if (!Clipboard.ContainsImage()) { _aiStatusText.Text = "No image found on the clipboard. Copy a screenshot first."; return false; }
+                          BitmapSource source = Clipboard.GetImage();
+                          if (source == null) return false;
+                          double scale = Math.Min(1.0, 1800.0 / Math.Max(source.PixelWidth, source.PixelHeight));
+                          BitmapSource prepared = source;
+                          if (scale < 1.0) { var transformed = new TransformedBitmap(source, new ScaleTransform(scale, scale)); transformed.Freeze(); prepared = transformed; }
+                          byte[] data; string mime = "image/png";
+                          var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(prepared));
+                          using (var ms = new MemoryStream()) { png.Save(ms); data = ms.ToArray(); }
+                          if (data.Length > 7 * 1024 * 1024)
+                          {
+                              var jpeg = new JpegBitmapEncoder { QualityLevel = 86 }; jpeg.Frames.Add(BitmapFrame.Create(prepared));
+                              using (var ms = new MemoryStream()) { jpeg.Save(ms); data = ms.ToArray(); }
+                              mime = "image/jpeg";
+                          }
+                          if (data.Length > 7 * 1024 * 1024) { Array.Clear(data, 0, data.Length); _aiStatusText.Text = "Image is too large. Try copying a smaller screenshot."; return false; }
+                          ClearPendingAiImage();
+                          _pendingAiImageBytes = data; _pendingAiImageMimeType = mime;
+                          _aiPreviewImage.Source = CreateImageFromBytes(data);
+                          _aiImagePreviewPanel.Visibility = Visibility.Visible;
+                          _aiStatusText.Text = "IMAGE ATTACHED  •  Sent only when you submit";
+                          return true;
+                      }
+                      catch (Exception ex) { _aiStatusText.Text = "Could not read clipboard image: " + ex.Message; return false; }
+                  }
+
+                  private static Image CreateImageFromBytes(byte[] bytes)
+                  {
+                      var bitmap = new BitmapImage();
+                      using (var ms = new MemoryStream(bytes))
+                      {
+                          bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.StreamSource = ms; bitmap.EndInit(); bitmap.Freeze();
+                      }
+                      return new Image { Source = bitmap, Stretch = Stretch.Uniform };
+                  }
+
+                  private async Task<string> AskGeminiStreamingAsync(List<AiChatMessage> history, CancellationToken token, Action<string> onText)
                   {
                       string apiKey = LoadAiApiKey();
                       if (string.IsNullOrWhiteSpace(apiKey))
-                          return "No API key is saved. Open Settings → AI, paste your Google Gemini API key, save it, and enable AI answers.";
-
+                          throw new InvalidOperationException("No API key is saved. Open Settings → AI, paste your Google Gemini API key, save it, and enable AI answers.");
                       string model = string.IsNullOrWhiteSpace(_config.AiModel) ? "gemini-3.5-flash-lite" : _config.AiModel.Trim();
-                      if (model.StartsWith("models/", StringComparison.OrdinalIgnoreCase))
-                          model = model.Substring("models/".Length);
-                      string url = "https://generativelanguage.googleapis.com/v1beta/models/" + Uri.EscapeDataString(model) + ":generateContent";
+                      if (model.StartsWith("models/", StringComparison.OrdinalIgnoreCase)) model = model.Substring("models/".Length);
+                      string url = "https://generativelanguage.googleapis.com/v1beta/models/" + Uri.EscapeDataString(model) + ":streamGenerateContent?alt=sse";
 
                       var thinkingConfig = new Dictionary<string, object>();
                       if (model.StartsWith("gemini-2.5", StringComparison.OrdinalIgnoreCase))
-                      {
-                          // Gemini 2.5 Pro has a non-zero minimum thinking budget; Flash/Lite can use 0.
                           thinkingConfig["thinkingBudget"] = model.IndexOf("pro", StringComparison.OrdinalIgnoreCase) >= 0 ? 128 : 0;
-                      }
-                      else if (model.IndexOf("3.8", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                               model.IndexOf("3.7", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                               model.StartsWith("gemini-4", StringComparison.OrdinalIgnoreCase))
-                      {
-                          // Newer model families may reject "minimal"; low is the compatible low-latency setting.
+                      else if (model.IndexOf("3.8", StringComparison.OrdinalIgnoreCase) >= 0 || model.IndexOf("3.7", StringComparison.OrdinalIgnoreCase) >= 0 || model.StartsWith("gemini-4", StringComparison.OrdinalIgnoreCase))
                           thinkingConfig["thinkingLevel"] = "low";
-                      }
-                      else
-                      {
-                          thinkingConfig["thinkingLevel"] = "minimal";
-                      }
+                      else thinkingConfig["thinkingLevel"] = "minimal";
 
                       var generationConfig = new Dictionary<string, object>
                       {
-                          { "temperature", 0.35 },
-                          { "maxOutputTokens", 2048 },
-                          { "thinkingConfig", thinkingConfig }
+                          { "temperature", 0.35 }, { "maxOutputTokens", 2048 }, { "thinkingConfig", thinkingConfig }
                       };
-                      var requestBody = new Dictionary<string, object>
+                      var contents = new List<object>();
+                      foreach (AiChatMessage m in history)
                       {
-                          { "contents", new object[]
-                              {
-                                  new Dictionary<string, object>
-                                  {
-                                      { "role", "user" },
-                                      { "parts", new object[]
-                                          {
-                                              new Dictionary<string, object>
-                                              {
-                                                  { "text", "Answer helpfully and clearly. Prefer concise explanations with Markdown headings, short lists, and code blocks when useful.\n\nUser question: " + prompt }
-                                              }
-                                          }
-                                      }
-                                  }
-                              }
-                          },
-                          { "generationConfig", generationConfig }
-                      };
+                          var parts = new List<object>();
+                          if (m.Role == "user")
+                          {
+                              string guidance = "Answer helpfully and clearly. Prefer concise explanations with Markdown headings, short lists, and code blocks when useful.";
+                              string txt = m.Text ?? "";
+                              if (!string.IsNullOrWhiteSpace(txt)) parts.Add(new Dictionary<string, object> { { "text", guidance + "\n\nUser message: " + txt } });
+                              else if (m.ImageData == null) parts.Add(new Dictionary<string, object> { { "text", guidance } });
+                          }
+                          else if (!string.IsNullOrWhiteSpace(m.Text))
+                              parts.Add(new Dictionary<string, object> { { "text", m.Text } });
 
+                          if (m.ImageData != null && m.ImageData.Length > 0)
+                              parts.Add(new Dictionary<string, object> { { "inlineData", new Dictionary<string, object> { { "mimeType", string.IsNullOrWhiteSpace(m.MimeType) ? "image/png" : m.MimeType }, { "data", Convert.ToBase64String(m.ImageData) } } } });
+                          if (parts.Count == 0) continue;
+                          contents.Add(new Dictionary<string, object> { { "role", m.Role == "model" ? "model" : "user" }, { "parts", parts.ToArray() } });
+                      }
+                      var requestBody = new Dictionary<string, object> { { "contents", contents.ToArray() }, { "generationConfig", generationConfig } };
                       string json = new JavaScriptSerializer().Serialize(requestBody);
                       using (var request = new HttpRequestMessage(HttpMethod.Post, url))
                       {
                           request.Headers.Add("x-goog-api-key", apiKey);
                           request.Content = new StringContent(json, Encoding.UTF8, "application/json");
-                          using (HttpResponseMessage response = await _httpClient.SendAsync(request).ConfigureAwait(false))
+                          using (HttpResponseMessage response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false))
                           {
-                              string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                              var serializer = new JavaScriptSerializer();
                               if (!response.IsSuccessStatusCode)
                               {
+                                  string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                                   string message = "Gemini returned " + (int)response.StatusCode + " (" + response.ReasonPhrase + ").";
                                   try
                                   {
-                                      var errorRoot = serializer.DeserializeObject(body) as Dictionary<string, object>;
-                                      var errorObject = errorRoot != null && errorRoot.ContainsKey("error")
-                                          ? errorRoot["error"] as Dictionary<string, object> : null;
-                                      if (errorObject != null && errorObject.ContainsKey("message"))
-                                          message += " " + Convert.ToString(errorObject["message"]);
+                                      var root = new JavaScriptSerializer().DeserializeObject(body) as Dictionary<string, object>;
+                                      var error = root != null && root.ContainsKey("error") ? root["error"] as Dictionary<string, object> : null;
+                                      if (error != null && error.ContainsKey("message")) message += " " + Convert.ToString(error["message"]);
                                   }
                                   catch { }
-                                  return message;
+                                  throw new InvalidOperationException(message);
                               }
-
-                              var root = serializer.DeserializeObject(body) as Dictionary<string, object>;
-                              var candidates = root != null && root.ContainsKey("candidates")
-                                  ? root["candidates"] as System.Collections.IList : null;
-                              if (candidates != null && candidates.Count > 0)
+                              using (Stream stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                              using (var reader = new StreamReader(stream))
                               {
-                                  var candidate = candidates[0] as Dictionary<string, object>;
-                                  var candidateContent = candidate != null && candidate.ContainsKey("content")
-                                      ? candidate["content"] as Dictionary<string, object> : null;
-                                  var parts = candidateContent != null && candidateContent.ContainsKey("parts")
-                                      ? candidateContent["parts"] as System.Collections.IList : null;
-                                  if (parts != null)
+                                  while (true)
                                   {
-                                      var answer = new StringBuilder();
-                                      foreach (object partObject in parts)
-                                      {
-                                          var part = partObject as Dictionary<string, object>;
-                                          if (part != null && part.ContainsKey("text")) answer.Append(Convert.ToString(part["text"]));
-                                      }
-                                      if (answer.Length > 0) return answer.ToString();
+                                      token.ThrowIfCancellationRequested();
+                                      string line = await reader.ReadLineAsync().ConfigureAwait(false);
+                                      if (line == null) break;
+                                      if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) continue;
+                                      string payload = line.Substring(5).Trim();
+                                      if (payload.Length == 0 || payload == "[DONE]") continue;
+                                      string chunk = ExtractGeminiStreamText(payload);
+                                      if (!string.IsNullOrEmpty(chunk)) onText(chunk);
                                   }
                               }
-                              return "Gemini returned no text answer. Try a different model name or a simpler prompt.";
                           }
                       }
+                      token.ThrowIfCancellationRequested();
+                      return "";
+                  }
+
+                  private static string ExtractGeminiStreamText(string json)
+                  {
+                      try
+                      {
+                          var root = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
+                          var candidates = root != null && root.ContainsKey("candidates") ? root["candidates"] as System.Collections.IList : null;
+                          if (candidates == null) return "";
+                          var output = new StringBuilder();
+                          foreach (object co in candidates)
+                          {
+                              var candidate = co as Dictionary<string, object>;
+                              var content = candidate != null && candidate.ContainsKey("content") ? candidate["content"] as Dictionary<string, object> : null;
+                              var parts = content != null && content.ContainsKey("parts") ? content["parts"] as System.Collections.IList : null;
+                              if (parts == null) continue;
+                              foreach (object po in parts)
+                              {
+                                  var part = po as Dictionary<string, object>;
+                                  if (part != null && part.ContainsKey("text")) output.Append(Convert.ToString(part["text"]));
+                              }
+                          }
+                          return output.ToString();
+                      }
+                      catch { return ""; }
                   }
 
                   private void RenderAiMarkdown(string markdown)
                   {
-                      if (_aiContent == null) return;
-                      _aiContent.Children.Clear();
+                      RenderAiMarkdownInto(_aiContent, markdown, true);
+                  }
+
+                  private void RenderAiMarkdownInto(StackPanel target, string markdown, bool clearTarget)
+                  {
+                      if (target == null) return;
+                      if (clearTarget) target.Children.Clear();
                       string fence = new string((char)96, 3);
                       bool inCode = false;
                       var code = new StringBuilder();
@@ -1023,7 +1309,7 @@ jobs:
                               Text = code.ToString().TrimEnd(), FontFamily = new FontFamily("Consolas"),
                               FontSize = 11.5, Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap
                           };
-                          _aiContent.Children.Add(codeBorder);
+                          target.Children.Add(codeBorder);
                           code.Clear();
                       };
 
@@ -1040,7 +1326,7 @@ jobs:
                           if (inCode) { code.AppendLine(line); continue; }
                           if (string.IsNullOrWhiteSpace(line))
                           {
-                              _aiContent.Children.Add(new Border { Height = 4 });
+                              target.Children.Add(new Border { Height = 4 });
                               continue;
                           }
 
@@ -1068,7 +1354,7 @@ jobs:
                               lineBlock.Inlines.Add(new Run(raw.Substring(0, raw.IndexOf(". ", StringComparison.Ordinal) + 2) + " "));
                           }
                           AddMarkdownInlines(lineBlock, clean);
-                          _aiContent.Children.Add(lineBlock);
+                          target.Children.Add(lineBlock);
                       }
                       if (inCode) flushCode();
                   }
@@ -1602,13 +1888,20 @@ jobs:
                           themeRow.Children.Add(btn);
                       }
                       themeCard.Children.Add(themeRow);
-                      themeCard.Children.Add(CreateToggle("Enable frosted glass blur", _config.EnableAcrylic, val =>
+                      themeCard.Children.Add(CreateToggle("Enable refined glass backdrop", _config.EnableAcrylic, val =>
                       {
                           _config.EnableAcrylic = val;
                           _config.Save();
                           UpdateAcrylicBlur();
                           ApplyThemeAndGeometry();
                       }));
+                      themeCard.Children.Add(CreateSliderRow("Background transparency", 55, 100, _config.WindowOpacity, val =>
+                      {
+                          _config.WindowOpacity = Math.Max(55, Math.Min(100, Math.Round(val)));
+                          _config.Save();
+                          ApplyThemeAndGeometry();
+                      }));
+                      themeCard.Children.Add(CreateSettingsInfo("Lower opacity reveals more of your wallpaper. Text stays crisp; blur can be toggled independently."));
 
                       var layoutCard = CreateSettingsCard(appearancePage, "Position & shape", "Adjust screen placement and size.");
                       layoutCard.Children.Add(CreateSliderRow("Width (px)", 480, 920, _config.WindowWidth, val =>
@@ -2045,7 +2338,7 @@ jobs:
                       int t = Math.Max(0, Math.Min(_themes.Length - 1, _config.ThemeIndex));
                       _isLightTheme = t == 1 || (t == 0 && IsWindowsAppsLightTheme());
                       byte[] p = t == 0 ? _themes[_isLightTheme ? 1 : 2] : _themes[t];
-                      byte bgAlpha = _config.EnableAcrylic ? (byte)205 : (byte)248;
+                      byte bgAlpha = (byte)Math.Max(140, Math.Min(255, (int)Math.Round(_config.WindowOpacity * 2.55)));
 
                       _primaryTextBrush = _isLightTheme
                           ? new SolidColorBrush(Color.FromRgb(32, 35, 40))
