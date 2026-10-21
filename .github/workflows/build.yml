@@ -309,7 +309,7 @@ jobs:
                   [DllImport("psapi.dll")]
                   private static extern int EmptyWorkingSet(IntPtr hwProc);
 
-remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
+                  private const int HOTKEY_ID = 9001;
                   private const uint MOD_ALT = 0x0001;
                   private const uint VK_SPACE = 0x20;
 
