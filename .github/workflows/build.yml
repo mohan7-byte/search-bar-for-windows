@@ -1324,7 +1324,7 @@ remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
                       var document = new FlowDocument
                       {
                           PagePadding = new Thickness(0),
-                          ColumnWidth = double.PositiveInfinity,
+                          ColumnWidth = double.NaN,
                           FontFamily = new FontFamily("Segoe UI"),
                           FontSize = 13,
                           Foreground = _primaryTextBrush
