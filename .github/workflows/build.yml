@@ -1032,7 +1032,7 @@ remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
 
                       var assistantBubble = CreateAiBubble(true, "✦  AI");
                       var assistantBody = assistantBubble.Child as StackPanel;
-                      var liveText = new TextBlock { Text = "", FontSize = 13, FontFamily = new FontFamily("Segoe UI"), Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, LineHeight = 21, IsTextSelectionEnabled = true };
+                      var liveText = new TextBlock { Text = "", FontSize = 13, FontFamily = new FontFamily("Segoe UI"), Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, LineHeight = 21 };
                       assistantBody.Children.Add(liveText); _aiContent.Children.Add(assistantBubble);
                       _aiScrollViewer.ScrollToEnd();
 
@@ -1317,24 +1317,40 @@ remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
                   {
                       if (target == null) return;
                       if (clearTarget) target.Children.Clear();
+
                       string fence = new string((char)96, 3);
                       bool inCode = false;
                       var code = new StringBuilder();
+                      var document = new FlowDocument
+                      {
+                          PagePadding = new Thickness(0),
+                          ColumnWidth = double.PositiveInfinity,
+                          FontFamily = new FontFamily("Segoe UI"),
+                          FontSize = 13,
+                          Foreground = _primaryTextBrush
+                      };
+
                       Action flushCode = () =>
                       {
-                          var codeBorder = new Border
+                          var codeParagraph = new Paragraph
                           {
-                              CornerRadius = new CornerRadius(9),
+                              FontFamily = new FontFamily("Consolas"),
+                              FontSize = 11.5,
+                              Foreground = _primaryTextBrush,
                               Background = _isLightTheme ? new SolidColorBrush(Color.FromRgb(237, 240, 245)) : new SolidColorBrush(Color.FromRgb(31, 34, 42)),
-                              BorderBrush = new SolidColorBrush(Color.FromArgb(45, 135, 145, 165)),
-                              BorderThickness = new Thickness(1), Padding = new Thickness(12), Margin = new Thickness(0, 4, 0, 8)
+                              BorderBrush = new SolidColorBrush(Color.FromArgb(55, 135, 145, 165)),
+                              BorderThickness = new Thickness(1),
+                              Padding = new Thickness(11, 9, 11, 9),
+                              Margin = new Thickness(0, 5, 0, 9),
+                              LineHeight = 18
                           };
-                          codeBorder.Child = new TextBlock
+                          string[] codeLines = code.ToString().TrimEnd().Split('\n');
+                          for (int i = 0; i < codeLines.Length; i++)
                           {
-                              Text = code.ToString().TrimEnd(), FontFamily = new FontFamily("Consolas"),
-                              FontSize = 12, FontFamily = new FontFamily("Consolas"), Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true
-                          };
-                          target.Children.Add(codeBorder);
+                              codeParagraph.Inlines.Add(new Run(codeLines[i]));
+                              if (i < codeLines.Length - 1) codeParagraph.Inlines.Add(new LineBreak());
+                          }
+                          document.Blocks.Add(codeParagraph);
                           code.Clear();
                       };
 
@@ -1351,7 +1367,12 @@ remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
                           if (inCode) { code.AppendLine(line); continue; }
                           if (string.IsNullOrWhiteSpace(line))
                           {
-                              target.Children.Add(new Border { Height = 4 });
+                              document.Blocks.Add(new Paragraph
+                              {
+                                  Margin = new Thickness(0),
+                                  Padding = new Thickness(0),
+                                  LineHeight = 7
+                              });
                               continue;
                           }
 
@@ -1360,6 +1381,7 @@ remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
                           while (headingLevel < clean.Length && headingLevel < 3 && clean[headingLevel] == '#') headingLevel++;
                           if (headingLevel > 0 && clean.Length > headingLevel && clean[headingLevel] == ' ')
                               clean = clean.Substring(headingLevel + 1);
+
                           bool bullet = clean.StartsWith("- ") || clean.StartsWith("* ") || clean.StartsWith("• ");
                           int numberSeparator = clean.IndexOf(". ", StringComparison.Ordinal);
                           bool numbered = numberSeparator > 0 && numberSeparator <= 3 &&
@@ -1376,23 +1398,41 @@ remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
                               clean = clean.Substring(numberSeparator + 2);
                           }
 
-                          var lineBlock = new TextBlock
+                          var paragraph = new Paragraph
                           {
                               FontFamily = new FontFamily("Segoe UI"),
                               FontSize = headingLevel == 1 ? 18 : (headingLevel == 2 ? 15 : (headingLevel == 3 ? 13.5 : 13)),
                               FontWeight = headingLevel > 0 || bullet || numbered ? FontWeights.SemiBold : FontWeights.Normal,
-                              Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true,
+                              Foreground = _primaryTextBrush,
                               Margin = new Thickness(0, headingLevel > 0 ? 8 : 3, 0, headingLevel > 0 ? 4 : 3),
                               LineHeight = headingLevel > 0 ? 26 : 21
                           };
-                          if (!string.IsNullOrEmpty(listPrefix)) lineBlock.Inlines.Add(new Run(listPrefix));
-                          AddMarkdownInlines(lineBlock, clean);
-                          target.Children.Add(lineBlock);
+                          if (!string.IsNullOrEmpty(listPrefix)) paragraph.Inlines.Add(new Run(listPrefix));
+                          AddMarkdownInlines(paragraph, clean);
+                          document.Blocks.Add(paragraph);
                       }
                       if (inCode) flushCode();
+
+                      byte[] palette = GetActiveThemePalette();
+                      var viewer = new FlowDocumentScrollViewer
+                      {
+                          Document = document,
+                          IsSelectionEnabled = true,
+                          IsInactiveSelectionHighlightEnabled = true,
+                          IsToolBarVisible = false,
+                          VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+                          HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+                          Background = Brushes.Transparent,
+                          Foreground = _primaryTextBrush,
+                          Padding = new Thickness(0),
+                          SelectionBrush = new SolidColorBrush(Color.FromRgb(palette[3], palette[4], palette[5])),
+                          SelectionOpacity = 0.45,
+                          Cursor = Cursors.IBeam
+                      };
+                      target.Children.Add(viewer);
                   }
 
-                  private void AddMarkdownInlines(TextBlock block, string text)
+                  private void AddMarkdownInlines(Paragraph block, string text)
                   {
                       int i = 0;
                       while (i < text.Length)
