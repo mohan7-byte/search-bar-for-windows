@@ -166,7 +166,6 @@ jobs:
                   public bool EnableCalc { get; set; } = true;
                   public bool EnableKill { get; set; } = true;
                   public bool EnableNotes { get; set; } = true;
-                  public bool EnableAcrylic { get; set; } = true;
                   public double WindowOpacity { get; set; } = 88;
                   public bool EnableShortcuts { get; set; } = true;
                   public bool EnableFavorites { get; set; } = true;
@@ -204,7 +203,6 @@ jobs:
                               "EnableCalc=" + EnableCalc,
                               "EnableKill=" + EnableKill,
                               "EnableNotes=" + EnableNotes,
-                              "EnableAcrylic=" + EnableAcrylic,
                               "WindowOpacity=" + WindowOpacity,
                               "EnableShortcuts=" + EnableShortcuts,
                               "EnableFavorites=" + EnableFavorites,
@@ -250,7 +248,6 @@ jobs:
                                   else if (k == "EnableCalc") cfg.EnableCalc = bVal;
                                   else if (k == "EnableKill") cfg.EnableKill = bVal;
                                   else if (k == "EnableNotes") cfg.EnableNotes = bVal;
-                                  else if (k == "EnableAcrylic") cfg.EnableAcrylic = bVal;
                                   else if (k == "WindowOpacity" && double.TryParse(v, out dVal)) cfg.WindowOpacity = Math.Max(55, Math.Min(100, dVal));
                                   else if (k == "EnableShortcuts") cfg.EnableShortcuts = bVal;
                                   else if (k == "EnableFavorites") cfg.EnableFavorites = bVal;
@@ -312,27 +309,7 @@ jobs:
                   [DllImport("psapi.dll")]
                   private static extern int EmptyWorkingSet(IntPtr hwProc);
 
-                  [DllImport("user32.dll")]
-                  private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
-
-                  [StructLayout(LayoutKind.Sequential)]
-                  private struct AccentPolicy
-                  {
-                      public int AccentState;
-                      public int AccentFlags;
-                      public int GradientColor;
-                      public int AnimationId;
-                  }
-
-                  [StructLayout(LayoutKind.Sequential)]
-                  private struct WindowCompositionAttributeData
-                  {
-                      public int Attribute;
-                      public IntPtr Data;
-                      public int SizeOfData;
-                  }
-
-                  private const int HOTKEY_ID = 9001;
+remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
                   private const uint MOD_ALT = 0x0001;
                   private const uint VK_SPACE = 0x20;
 
@@ -432,7 +409,6 @@ jobs:
 
                       // Register Alt + Space globally
                       RegisterHotKey(helper.Handle, HOTKEY_ID, MOD_ALT, VK_SPACE);
-                      UpdateAcrylicBlur();
                       AttachSystemThemeListener();
                       TrimMemory();
                   }
@@ -486,31 +462,72 @@ jobs:
                       return IntPtr.Zero;
                   }
 
-                  private void UpdateAcrylicBlur()
+                  private Style BuildSlimScrollbarStyle()
                   {
-                      try
+                      var thumbTemplate = new ControlTemplate(typeof(Thumb));
+                      var thumbBorder = new FrameworkElementFactory(typeof(Border));
+                      thumbBorder.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
+                      thumbBorder.SetValue(Border.MarginProperty, new Thickness(2));
+                      thumbBorder.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromArgb(138, 132, 145, 166)));
+                      thumbTemplate.VisualTree = thumbBorder;
+                      var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+                      hover.Setters.Add(new Setter(Border.BackgroundProperty, new SolidColorBrush(Color.FromArgb(220, 95, 155, 245)));
+                      thumbTemplate.Triggers.Add(hover);
+
+                      var template = new ControlTemplate(typeof(ScrollBar));
+                      var root = new FrameworkElementFactory(typeof(Grid));
+                      root.SetValue(Panel.BackgroundProperty, Brushes.Transparent);
+                      var track = new FrameworkElementFactory(typeof(Track), "PART_Track");
+                      track.SetBinding(Track.OrientationProperty, new Binding("Orientation") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
+                      track.SetBinding(Track.MinimumProperty, new Binding("Minimum") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
+                      track.SetBinding(Track.MaximumProperty, new Binding("Maximum") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
+                      track.SetBinding(Track.ValueProperty, new Binding("Value") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
+                      track.SetBinding(Track.ViewportSizeProperty, new Binding("ViewportSize") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
+                      track.SetValue(Track.IsDirectionReversedProperty, true);
+                      var thumb = new FrameworkElementFactory(typeof(Thumb));
+                      thumb.SetValue(Thumb.TemplateProperty, thumbTemplate);
+                      track.SetValue(Track.ThumbProperty, thumb);
+
+                      var decrease = new FrameworkElementFactory(typeof(RepeatButton));
+                      decrease.SetValue(RepeatButton.CommandProperty, ScrollBar.PageUpCommand);
+                      decrease.SetValue(UIElement.FocusableProperty, false);
+                      decrease.SetValue(Control.IsTabStopProperty, false);
+                      decrease.SetValue(UIElement.OpacityProperty, 0.0);
+                      decrease.SetValue(Control.BackgroundProperty, Brushes.Transparent);
+                      decrease.SetValue(Control.BorderThicknessProperty, new Thickness(0));
+                      track.SetValue(Track.DecreaseRepeatButtonProperty, decrease);
+                      var increase = new FrameworkElementFactory(typeof(RepeatButton));
+                      increase.SetValue(RepeatButton.CommandProperty, ScrollBar.PageDownCommand);
+                      increase.SetValue(UIElement.FocusableProperty, false);
+                      increase.SetValue(Control.IsTabStopProperty, false);
+                      increase.SetValue(UIElement.OpacityProperty, 0.0);
+                      increase.SetValue(Control.BackgroundProperty, Brushes.Transparent);
+                      increase.SetValue(Control.BorderThicknessProperty, new Thickness(0));
+                      track.SetValue(Track.IncreaseRepeatButtonProperty, increase);
+
+                      root.AppendChild(track);
+                      template.VisualTree = root;
+                      var horizontal = new Trigger { Property = ScrollBar.OrientationProperty, Value = Orientation.Horizontal };
+                      horizontal.Setters.Add(new Setter(Track.IsDirectionReversedProperty, false, "PART_Track"));
+                      template.Triggers.Add(horizontal);
+
+                      var style = new Style(typeof(ScrollBar));
+                      style.Setters.Add(new Setter(FrameworkElement.WidthProperty, 8.0));
+                      style.Setters.Add(new Setter(FrameworkElement.HeightProperty, double.NaN));
+                      style.Setters.Add(new Setter(Control.BackgroundProperty, Brushes.Transparent));
+                      style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
+                      style.Setters.Add(new Setter(Control.TemplateProperty, template));
+                      style.Triggers.Add(new Trigger
                       {
-                          var hwnd = new WindowInteropHelper(this).Handle;
-                          if (hwnd == IntPtr.Zero) return;
-                          var accent = new AccentPolicy
+                          Property = ScrollBar.OrientationProperty,
+                          Value = Orientation.Horizontal,
+                          Setters =
                           {
-                              AccentState = _config.EnableAcrylic ? 4 : 0, // ACCENT_ENABLE_ACRYLICBLURBEHIND
-                              AccentFlags = 2,
-                              GradientColor = unchecked((int)(((uint)Math.Max(140, Math.Min(255, (int)Math.Round(_config.WindowOpacity * 2.55))) << 24) | 0x00181C26u))
-                          };
-                          int size = Marshal.SizeOf(accent);
-                          IntPtr ptr = Marshal.AllocHGlobal(size);
-                          Marshal.StructureToPtr(accent, ptr, false);
-                          var data = new WindowCompositionAttributeData
-                          {
-                              Attribute = 19, // WCA_ACCENT_POLICY
-                              SizeOfData = size,
-                              Data = ptr
-                          };
-                          SetWindowCompositionAttribute(hwnd, ref data);
-                          Marshal.FreeHGlobal(ptr);
-                      }
-                      catch { }
+                              new Setter(FrameworkElement.WidthProperty, double.NaN),
+                              new Setter(FrameworkElement.HeightProperty, 6.0)
+                          }
+                      });
+                      return style;
                   }
 
                   private void BuildUI()
@@ -523,6 +540,7 @@ jobs:
                       Background = Brushes.Transparent;
                       Topmost = true;
                       ShowInTaskbar = false;
+                      Resources.Add(typeof(ScrollBar), BuildSlimScrollbarStyle());
 
                       var rootGrid = new Grid { Margin = new Thickness(24) };
                       var transformGroup = new TransformGroup();
@@ -1013,9 +1031,9 @@ jobs:
                       _aiContent.Children.Add(userBubble);
                       ClearPendingAiImage();
 
-                      var assistantBubble = CreateAiBubble(true, "✦  GEMINI");
+                      var assistantBubble = CreateAiBubble(true, "✦  AI");
                       var assistantBody = assistantBubble.Child as StackPanel;
-                      var liveText = new TextBlock { Text = "", FontSize = 12.5, Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, LineHeight = 20 };
+                      var liveText = new TextBlock { Text = "", FontSize = 13, FontFamily = new FontFamily("Segoe UI"), Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, LineHeight = 21, IsTextSelectionEnabled = true };
                       assistantBody.Children.Add(liveText); _aiContent.Children.Add(assistantBubble);
                       _aiScrollViewer.ScrollToEnd();
 
@@ -1024,8 +1042,7 @@ jobs:
                       var cancellation = new CancellationTokenSource();
                       _aiCancellation = cancellation; _aiRequestRunning = true;
                       _aiSendButton.IsEnabled = false; _aiStopButton.Visibility = Visibility.Visible;
-                      string modelName = string.IsNullOrWhiteSpace(_config.AiModel) ? "Gemini" : _config.AiModel;
-                      _aiStatusText.Text = "CONNECTING  •  " + modelName;
+                      _aiStatusText.Text = "AI IS THINKING  •  SESSION ONLY";
                       var streamed = new StringBuilder();
 
                       Task.Run(async () =>
@@ -1072,7 +1089,7 @@ jobs:
                                   {
                                       _lastAiResponse = answer;
                                       _aiConversation.Add(new AiChatMessage { Role = "model", Text = answer });
-                                      _aiStatusText.Text = "ANSWER READY  •  " + modelName + "  •  SESSION ONLY";
+                                      _aiStatusText.Text = "AI  •  ANSWER READY  •  SESSION ONLY";
                                   }
                                   else if (canceled) _aiStatusText.Text = "STOPPED  •  Partial output is visible but not in chat context";
                                   else { _lastAiResponse = ""; _aiStatusText.Text = "REQUEST FAILED  •  Check the message above"; }
@@ -1316,7 +1333,7 @@ jobs:
                           codeBorder.Child = new TextBlock
                           {
                               Text = code.ToString().TrimEnd(), FontFamily = new FontFamily("Consolas"),
-                              FontSize = 11.5, Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap
+                              FontSize = 12, FontFamily = new FontFamily("Consolas"), Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true
                           };
                           target.Children.Add(codeBorder);
                           code.Clear();
@@ -1345,23 +1362,31 @@ jobs:
                           if (headingLevel > 0 && clean.Length > headingLevel && clean[headingLevel] == ' ')
                               clean = clean.Substring(headingLevel + 1);
                           bool bullet = clean.StartsWith("- ") || clean.StartsWith("* ") || clean.StartsWith("• ");
-                          bool numbered = clean.Length > 2 && char.IsDigit(clean[0]) && clean.IndexOf(". ", StringComparison.Ordinal) == 1;
-                          if (bullet || numbered) clean = clean.Substring(bullet ? 2 : 3);
+                          int numberSeparator = clean.IndexOf(". ", StringComparison.Ordinal);
+                          bool numbered = numberSeparator > 0 && numberSeparator <= 3 &&
+                              clean.Substring(0, numberSeparator).All(char.IsDigit);
+                          string listPrefix = "";
+                          if (bullet)
+                          {
+                              listPrefix = "•  ";
+                              clean = clean.Substring(2);
+                          }
+                          else if (numbered)
+                          {
+                              listPrefix = clean.Substring(0, numberSeparator + 2);
+                              clean = clean.Substring(numberSeparator + 2);
+                          }
 
                           var lineBlock = new TextBlock
                           {
-                              FontSize = headingLevel == 1 ? 18 : (headingLevel == 2 ? 15 : (headingLevel == 3 ? 13.5 : 12.5)),
+                              FontFamily = new FontFamily("Segoe UI"),
+                              FontSize = headingLevel == 1 ? 18 : (headingLevel == 2 ? 15 : (headingLevel == 3 ? 13.5 : 13)),
                               FontWeight = headingLevel > 0 || bullet || numbered ? FontWeights.SemiBold : FontWeights.Normal,
-                              Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap,
-                              Margin = new Thickness(0, headingLevel > 0 ? 7 : 2, 0, headingLevel > 0 ? 3 : 2),
-                              LineHeight = headingLevel > 0 ? 25 : 20
+                              Foreground = _primaryTextBrush, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true,
+                              Margin = new Thickness(0, headingLevel > 0 ? 8 : 3, 0, headingLevel > 0 ? 4 : 3),
+                              LineHeight = headingLevel > 0 ? 26 : 21
                           };
-                          if (bullet) lineBlock.Inlines.Add(new Run("•  "));
-                          else if (numbered)
-                          {
-                              string raw = rawLine.TrimStart();
-                              lineBlock.Inlines.Add(new Run(raw.Substring(0, raw.IndexOf(". ", StringComparison.Ordinal) + 2) + " "));
-                          }
+                          if (!string.IsNullOrEmpty(listPrefix)) lineBlock.Inlines.Add(new Run(listPrefix));
                           AddMarkdownInlines(lineBlock, clean);
                           target.Children.Add(lineBlock);
                       }
@@ -1897,21 +1922,13 @@ jobs:
                           themeRow.Children.Add(btn);
                       }
                       themeCard.Children.Add(themeRow);
-                      themeCard.Children.Add(CreateToggle("Enable refined glass backdrop", _config.EnableAcrylic, val =>
-                      {
-                          _config.EnableAcrylic = val;
-                          _config.Save();
-                          UpdateAcrylicBlur();
-                          ApplyThemeAndGeometry();
-                      }));
                       themeCard.Children.Add(CreateSliderRow("Background transparency", 0, 45, 100 - _config.WindowOpacity, val =>
                       {
                           _config.WindowOpacity = Math.Max(55, Math.Min(100, 100 - Math.Round(val)));
                           _config.Save();
-                          UpdateAcrylicBlur();
                           ApplyThemeAndGeometry();
                       }));
-                      themeCard.Children.Add(CreateSettingsInfo("Higher transparency reveals more of your wallpaper. Use lower values for stronger contrast; blur can be toggled independently."));
+                      themeCard.Children.Add(CreateSettingsInfo("Adjust background transparency independently of the solid, theme-aware surface."));
 
                       var layoutCard = CreateSettingsCard(appearancePage, "Position & shape", "Adjust screen placement and size.");
                       layoutCard.Children.Add(CreateSliderRow("Width (px)", 480, 920, _config.WindowWidth, val =>
