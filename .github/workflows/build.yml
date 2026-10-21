@@ -843,7 +843,7 @@ jobs:
                           Background = new SolidColorBrush(Color.FromArgb(24, 210, 70, 70)), Foreground = _primaryTextBrush,
                           Cursor = Cursors.Hand, Visibility = Visibility.Collapsed, ToolTip = "Stop response generation"
                       };
-                      _aiStopButton.Click += (s, e) => { try { if (_aiCancellation != null && !_aiCancellation.IsCancellationRequested) { _aiStatusText.Text = "Stopping generation…"; _aiCancellation.Cancel(); } } catch { } };
+                      _aiStopButton.Click += (s, e) => { try { if (_aiCancellation != null && !_aiCancellation.IsCancellationRequested) { _aiStatusText.Text = "Stopping generation…"; _aiCancellation.Cancel(); _httpClient.CancelPendingRequests(); } } catch { } };
                       sendActions.Children.Add(_aiStopButton);
                       _aiSendButton = new Button
                       {
@@ -1135,7 +1135,7 @@ jobs:
                   private void ClearAiSession()
                   {
                       ++_aiGeneration;
-                      try { if (_aiCancellation != null) _aiCancellation.Cancel(); } catch { }
+                      try { if (_aiCancellation != null) _aiCancellation.Cancel(); _httpClient.CancelPendingRequests(); } catch { }
                       _aiCancellation = null; _aiRequestRunning = false;
                       ClearAiMessages(_aiConversation); ClearPendingAiImage(); _lastAiResponse = "";
                       if (_aiContent != null) _aiContent.Children.Clear();
@@ -1225,7 +1225,8 @@ jobs:
                           contents.Add(new Dictionary<string, object> { { "role", m.Role == "model" ? "model" : "user" }, { "parts", parts.ToArray() } });
                       }
                       var requestBody = new Dictionary<string, object> { { "contents", contents.ToArray() }, { "generationConfig", generationConfig } };
-                      string json = new JavaScriptSerializer { MaxJsonLength = 20 * 1024 * 1024 }.Serialize(requestBody);
+                      var jsonSerializer = new JavaScriptSerializer { MaxJsonLength = 20 * 1024 * 1024 };
+                      string json = jsonSerializer.Serialize(requestBody);
                       using (var request = new HttpRequestMessage(HttpMethod.Post, url))
                       {
                           request.Headers.Add("x-goog-api-key", apiKey);
