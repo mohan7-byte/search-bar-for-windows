@@ -1049,7 +1049,15 @@ jobs:
                               completed = true;
                           }
                           catch (OperationCanceledException) { canceled = true; lock (streamed) answer = streamed.ToString(); }
-                          catch (Exception ex) { answer = "AI request failed: " + ex.Message; }
+                          catch (Exception ex)
+                          {
+                              if (cancellation.IsCancellationRequested)
+                              {
+                                  canceled = true;
+                                  lock (streamed) answer = streamed.ToString();
+                              }
+                              else answer = "AI request failed: " + ex.Message;
+                          }
                           finally
                           {
                               ClearAiMessages(snapshot);
@@ -1217,7 +1225,7 @@ jobs:
                           contents.Add(new Dictionary<string, object> { { "role", m.Role == "model" ? "model" : "user" }, { "parts", parts.ToArray() } });
                       }
                       var requestBody = new Dictionary<string, object> { { "contents", contents.ToArray() }, { "generationConfig", generationConfig } };
-                      string json = new JavaScriptSerializer().Serialize(requestBody);
+                      string json = new JavaScriptSerializer { MaxJsonLength = 20 * 1024 * 1024 }.Serialize(requestBody);
                       using (var request = new HttpRequestMessage(HttpMethod.Post, url))
                       {
                           request.Headers.Add("x-goog-api-key", apiKey);
