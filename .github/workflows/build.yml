@@ -3386,6 +3386,7 @@ jobs:
                   public void HideSearch()
                   {
                       if (!IsVisible) return;
+                      ClearAiSession();
                       Hide();
                       _resultsList.Items.Clear();
                       _folderCache = null;
