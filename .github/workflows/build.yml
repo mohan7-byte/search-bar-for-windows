@@ -464,70 +464,69 @@ remove acrylic PInvoke                  private const int HOTKEY_ID = 9001;
 
                   private Style BuildSlimScrollbarStyle()
                   {
-                      var thumbTemplate = new ControlTemplate(typeof(Thumb));
-                      var thumbBorder = new FrameworkElementFactory(typeof(Border));
-                      thumbBorder.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
-                      thumbBorder.SetValue(Border.MarginProperty, new Thickness(2));
-                      thumbBorder.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromArgb(138, 132, 145, 166)));
-                      thumbTemplate.VisualTree = thumbBorder;
-                      var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
-                      hover.Setters.Add(new Setter(Border.BackgroundProperty, new SolidColorBrush(Color.FromArgb(220, 95, 155, 245)));
-                      thumbTemplate.Triggers.Add(hover);
-
-                      var template = new ControlTemplate(typeof(ScrollBar));
-                      var root = new FrameworkElementFactory(typeof(Grid));
-                      root.SetValue(Panel.BackgroundProperty, Brushes.Transparent);
-                      var track = new FrameworkElementFactory(typeof(Track), "PART_Track");
-                      track.SetBinding(Track.OrientationProperty, new Binding("Orientation") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
-                      track.SetBinding(Track.MinimumProperty, new Binding("Minimum") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
-                      track.SetBinding(Track.MaximumProperty, new Binding("Maximum") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
-                      track.SetBinding(Track.ValueProperty, new Binding("Value") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
-                      track.SetBinding(Track.ViewportSizeProperty, new Binding("ViewportSize") { RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent) });
-                      track.SetValue(Track.IsDirectionReversedProperty, true);
-                      var thumb = new FrameworkElementFactory(typeof(Thumb));
-                      thumb.SetValue(Thumb.TemplateProperty, thumbTemplate);
-                      track.SetValue(Track.ThumbProperty, thumb);
-
-                      var decrease = new FrameworkElementFactory(typeof(RepeatButton));
-                      decrease.SetValue(RepeatButton.CommandProperty, ScrollBar.PageUpCommand);
-                      decrease.SetValue(UIElement.FocusableProperty, false);
-                      decrease.SetValue(Control.IsTabStopProperty, false);
-                      decrease.SetValue(UIElement.OpacityProperty, 0.0);
-                      decrease.SetValue(Control.BackgroundProperty, Brushes.Transparent);
-                      decrease.SetValue(Control.BorderThicknessProperty, new Thickness(0));
-                      track.SetValue(Track.DecreaseRepeatButtonProperty, decrease);
-                      var increase = new FrameworkElementFactory(typeof(RepeatButton));
-                      increase.SetValue(RepeatButton.CommandProperty, ScrollBar.PageDownCommand);
-                      increase.SetValue(UIElement.FocusableProperty, false);
-                      increase.SetValue(Control.IsTabStopProperty, false);
-                      increase.SetValue(UIElement.OpacityProperty, 0.0);
-                      increase.SetValue(Control.BackgroundProperty, Brushes.Transparent);
-                      increase.SetValue(Control.BorderThicknessProperty, new Thickness(0));
-                      track.SetValue(Track.IncreaseRepeatButtonProperty, increase);
-
-                      root.AppendChild(track);
-                      template.VisualTree = root;
-                      var horizontal = new Trigger { Property = ScrollBar.OrientationProperty, Value = Orientation.Horizontal };
-                      horizontal.Setters.Add(new Setter(Track.IsDirectionReversedProperty, false, "PART_Track"));
-                      template.Triggers.Add(horizontal);
-
-                      var style = new Style(typeof(ScrollBar));
-                      style.Setters.Add(new Setter(FrameworkElement.WidthProperty, 8.0));
-                      style.Setters.Add(new Setter(FrameworkElement.HeightProperty, double.NaN));
-                      style.Setters.Add(new Setter(Control.BackgroundProperty, Brushes.Transparent));
-                      style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
-                      style.Setters.Add(new Setter(Control.TemplateProperty, template));
-                      style.Triggers.Add(new Trigger
-                      {
-                          Property = ScrollBar.OrientationProperty,
-                          Value = Orientation.Horizontal,
-                          Setters =
-                          {
-                              new Setter(FrameworkElement.WidthProperty, double.NaN),
-                              new Setter(FrameworkElement.HeightProperty, 6.0)
-                          }
-                      });
-                      return style;
+                      string xaml = @"
+<Style xmlns=""http://schemas.microsoft.com/winfx/2006/xaml/presentation""
+       xmlns:x=""http://schemas.microsoft.com/winfx/2006/xaml""
+       TargetType=""{x:Type ScrollBar}"">
+  <Setter Property=""Width"" Value=""8""/>
+  <Setter Property=""Background"" Value=""Transparent""/>
+  <Setter Property=""BorderThickness"" Value=""0""/>
+  <Setter Property=""Template"">
+    <Setter.Value>
+      <ControlTemplate TargetType=""{x:Type ScrollBar}"">
+        <Grid Background=""Transparent"">
+          <Track x:Name=""PART_Track""
+                 Orientation=""{TemplateBinding Orientation}""
+                 Minimum=""{TemplateBinding Minimum}""
+                 Maximum=""{TemplateBinding Maximum}""
+                 Value=""{TemplateBinding Value}""
+                 ViewportSize=""{TemplateBinding ViewportSize}""
+                 IsDirectionReversed=""True"">
+            <Track.DecreaseRepeatButton>
+              <RepeatButton Command=""{x:Static ScrollBar.PageUpCommand}"" Opacity=""0""
+                            Focusable=""False"" IsTabStop=""False"" Background=""Transparent""
+                            BorderThickness=""0""/>
+            </Track.DecreaseRepeatButton>
+            <Track.Thumb>
+              <Thumb>
+                <Thumb.Template>
+                  <ControlTemplate TargetType=""{x:Type Thumb}"">
+                    <Border x:Name=""ThumbBorder"" Margin=""2"" CornerRadius=""4"" Background=""#8A8491A6""/>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property=""IsMouseOver"" Value=""True"">
+                        <Setter TargetName=""ThumbBorder"" Property=""Background"" Value=""#DC5F9BF5""/>
+                      </Trigger>
+                      <Trigger Property=""IsDragging"" Value=""True"">
+                        <Setter TargetName=""ThumbBorder"" Property=""Background"" Value=""#F05F9BF5""/>
+                      </Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </Thumb.Template>
+              </Thumb>
+            </Track.Thumb>
+            <Track.IncreaseRepeatButton>
+              <RepeatButton Command=""{x:Static ScrollBar.PageDownCommand}"" Opacity=""0""
+                            Focusable=""False"" IsTabStop=""False"" Background=""Transparent""
+                            BorderThickness=""0""/>
+            </Track.IncreaseRepeatButton>
+          </Track>
+        </Grid>
+        <ControlTemplate.Triggers>
+          <Trigger Property=""Orientation"" Value=""Horizontal"">
+            <Setter TargetName=""PART_Track"" Property=""IsDirectionReversed"" Value=""False""/>
+          </Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
+  <Style.Triggers>
+    <Trigger Property=""Orientation"" Value=""Horizontal"">
+      <Setter Property=""Width"" Value=""Auto""/>
+      <Setter Property=""Height"" Value=""6""/>
+    </Trigger>
+  </Style.Triggers>
+</Style>";
+                      return System.Windows.Markup.XamlReader.Parse(xaml) as Style;
                   }
 
                   private void BuildUI()
